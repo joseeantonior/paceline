@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "paceline",
   "displayName": "paceline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Your agents take turns. Enforces a minimum gap between calls to the same external host across every Claude Code session, subagent and script on the machine.",
   "author": {
     "name": "Jose Antonio Rodriguez",
@@ -11,5 +11,13 @@
   "homepage": "https://github.com/joseeantonior/paceline#readme",
   "repository": "https://github.com/joseeantonior/paceline",
   "license": "MIT",
-  "keywords": ["hooks", "rate-limit", "throttle", "pacing", "browser", "mcp", "webfetch"]
+  "keywords": [
+    "hooks",
+    "rate-limit",
+    "throttle",
+    "pacing",
+    "browser",
+    "mcp",
+    "webfetch"
+  ]
 }

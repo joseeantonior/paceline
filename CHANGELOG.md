@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-10-20
+
+- Release tooling: `npm run bump -- <version>` sets the version in `package.json`,
+  `package-lock.json`, the plugin manifest and the CLI together, and `npm run check`
+  fails when they disagree. First npm release published through the workflow.
+- No runtime changes since 0.1.0.
+
 ## 0.1.0 — 2026-10-20
 
 First release.

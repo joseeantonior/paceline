@@ -286,10 +286,18 @@ Two GitHub Actions workflows run in `.github/workflows/`:
 - `ci.yml` runs the type check, unit and end-to-end tests, `dist/` freshness, the concurrency
   proof on Linux, macOS and Windows, and `claude plugin validate --strict` on every push.
 - `release.yml` publishes to npm when a `v*` tag is pushed, through npm trusted publishing (the
-  workflow's GitHub identity is the credential; no token is stored). To release: bump `version` in
-  `package.json` and `.claude-plugin/plugin.json`, note the changes in `CHANGELOG.md`, commit,
-  then `git tag v0.1.1 && git push --tags`. Marketplace installs pick up the new `version`; npm
-  installs pick up the new package.
+  workflow's GitHub identity is the credential; no token is stored). The tag must match
+  `package.json`, which `npm run check` also requires to match the plugin manifest and the CLI.
+  To release:
+
+  ```bash
+  npm run bump -- 0.1.2        # package.json, package-lock.json, plugin.json, src/cli.ts
+  npm run build                # dist/ is committed
+  # add a CHANGELOG.md entry
+  git commit -am "v0.1.2" && git tag v0.1.2 && git push && git push --tags
+  ```
+
+  Marketplace installs pick up the new `version`; npm installs pick up the new package.
 
 The hook is one bundled file (`dist/hook.js`, no runtime dependencies) so a non-matching call
 costs about 45 ms. `computeWaitMs` and the lock reclaim logic are pure functions with their own
