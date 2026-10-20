@@ -50,6 +50,9 @@ export const DEFAULT_READ_ONLY_TOOLS: readonly string[] = [
   "mcp__claude-in-chrome__update_plan",
 ];
 
+/** The PreToolUse hook timeout in hooks.json is 300 s; stay safely under it. */
+export const MAX_WAIT_CEILING_MS = 290_000;
+
 export const DEFAULT_CONFIG: Config = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
@@ -203,6 +206,8 @@ export function mergeConfigs(layers: Partial_[]): Config {
     for (const r of layer.rules ?? []) rules.set(r.name, r);
     for (const r of layer.refuse ?? []) refuse.set(r.tool, r);
   }
+  // hooks.json gives the PreToolUse hook 300 s; a longer wait would time out (and block) anyway.
+  cfg.maxWaitMs = Math.min(cfg.maxWaitMs, MAX_WAIT_CEILING_MS);
   cfg.readOnlyTools = [...readOnly];
   cfg.rules = [...rules.values()];
   cfg.refuse = [...refuse.values()];

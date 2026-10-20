@@ -177,6 +177,7 @@ export async function pace(store: Store, buckets: readonly Bucket[], claim: Clai
 export async function release(store: Store, toolUseId: string, now = Date.now()): Promise<string[]> {
   const claim = store.takeClaim(toolUseId);
   const keys = claim?.buckets ?? store.bucketsInFlightFor(toolUseId);
+  if (!claim) store.pruneClaims(undefined, now); // a miss is rare; use it to sweep abandoned claims
   for (const key of keys) {
     await store.withLock(key, () => store.finish(key, toolUseId, now));
   }

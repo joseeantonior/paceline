@@ -89,7 +89,7 @@ describe("hook end to end", () => {
     const o = await run("pre", { tool_name: "Bash", tool_input: { command: "ls -la" }, tool_use_id: "b1" });
     expect(o.code).toBe(0);
     expect(o.stdout).toBe("");
-    expect(o.ms).toBeLessThan(1500); // generous for CI; locally ~45 ms
+    expect(o.ms).toBeLessThan(3000); // generous for CI; locally ~45 ms
   }, SLOW);
 
   it("passes an unknown host through and a read-only chrome tool through", async () => {

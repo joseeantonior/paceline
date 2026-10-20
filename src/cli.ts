@@ -156,7 +156,7 @@ function cmdStatus(args: string[]): void {
         ? `${(r.inFlight.toolName ?? "?").replace("mcp__claude-in-chrome__", "chrome:")} ${ago(now - r.inFlight.since)}${r.inFlightOwnerAlive === false ? " (owner gone)" : ""}`
         : "—";
       lines.push(
-        `${pad(r.label, w)}${pad(r.minIntervalMs === null ? "—" : `${r.minIntervalMs}ms`, 10)}${pad(r.lastFinishedAt ? ago(now - r.lastFinishedAt) : "never", 14)}${pad(inMs(r.nextAllowedInMs), 14)}${pad(inflight, 34)}${pad(String(r.lastHour), 11)}${r.totalCalls}`,
+        `${pad(r.label, w)}${pad(r.minIntervalMs === null ? "—" : `${r.minIntervalMs}ms`, 10)}${pad(r.lastFinishedAt ? ago(now - r.lastFinishedAt) : "never", 14)}${pad(r.inFlight ? `+${(r.minIntervalMs ?? 0) / 1000}s after it` : inMs(r.nextAllowedInMs), 14)}${pad(inflight, 34)}${pad(String(r.lastHour), 11)}${r.totalCalls}`,
       );
     }
   }

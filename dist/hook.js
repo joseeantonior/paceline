@@ -44,6 +44,7 @@ var DEFAULT_READ_ONLY_TOOLS = [
   "mcp__claude-in-chrome__shortcuts_list",
   "mcp__claude-in-chrome__update_plan"
 ];
+var MAX_WAIT_CEILING_MS = 29e4;
 var DEFAULT_CONFIG = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
@@ -184,6 +185,7 @@ function mergeConfigs(layers) {
     for (const r of layer.rules ?? []) rules.set(r.name, r);
     for (const r of layer.refuse ?? []) refuse.set(r.tool, r);
   }
+  cfg.maxWaitMs = Math.min(cfg.maxWaitMs, MAX_WAIT_CEILING_MS);
   cfg.readOnlyTools = [...readOnly];
   cfg.rules = [...rules.values()];
   cfg.refuse = [...refuse.values()];
@@ -361,8 +363,33 @@ var Store = class {
   lastFile(key) {
     return import_node_path2.default.join(this.bucketDir(key), "last.json");
   }
+  get claimsDir() {
+    return import_node_path2.default.join(this.dir, "claims");
+  }
   claimFile(toolUseId) {
-    return import_node_path2.default.join(this.dir, "claims", `${sanitizeKey(toolUseId)}.json`);
+    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 150);
+    return import_node_path2.default.join(this.claimsDir, `${safe}.json`);
+  }
+  /** Delete claim files whose call never reported back (older than `maxAgeMs`). */
+  pruneClaims(maxAgeMs = 24 * HOUR_MS, now = Date.now()) {
+    let removed = 0;
+    let names;
+    try {
+      names = import_node_fs3.default.readdirSync(this.claimsDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      const file = import_node_path2.default.join(this.claimsDir, name);
+      try {
+        if (now - import_node_fs3.default.statSync(file).mtimeMs > maxAgeMs) {
+          import_node_fs3.default.unlinkSync(file);
+          removed++;
+        }
+      } catch {
+      }
+    }
+    return removed;
   }
   get tabsFile() {
     return import_node_path2.default.join(this.dir, "tabs.json");
@@ -848,6 +875,7 @@ async function pace(store, buckets, claim, opts) {
 async function release(store, toolUseId, now = Date.now()) {
   const claim = store.takeClaim(toolUseId);
   const keys = claim?.buckets ?? store.bucketsInFlightFor(toolUseId);
+  if (!claim) store.pruneClaims(void 0, now);
   for (const key of keys) {
     await store.withLock(key, () => store.finish(key, toolUseId, now));
   }
@@ -1004,13 +1032,14 @@ async function handlePost(input, store, state) {
   const released = await release(store, toolUseId, now);
   const event = input.hook_event_name ?? "PostToolUse";
   if (toolName.startsWith(CHROME_PREFIX)) {
-    const entries = tabsFromResponse(input.tool_response);
+    const entries = {};
     const tabId = tabIdOf(input.tool_input);
     if (event === "PostToolUse" && tabId !== void 0 && input.tool_input && typeof input.tool_input === "object") {
       const url = input.tool_input.url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
     }
+    Object.assign(entries, tabsFromResponse(input.tool_response));
     if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== void 0 && event === "PostToolUse") {
       store.forgetTab(tabId);
     }

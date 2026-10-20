@@ -172,6 +172,21 @@ describe("Store", () => {
     expect(s.takeClaim("toolu_1")).toBeUndefined();
   });
 
+  it("keeps claim file names case-sensitive and prunes stale claims", () => {
+    const s = new Store(dir);
+    s.writeClaim({ toolUseId: "toolu_ABC", buckets: ["r_a"], since: 1 });
+    s.writeClaim({ toolUseId: "toolu_abc", buckets: ["r_b"], since: 1 });
+    expect(s.takeClaim("toolu_ABC")?.buckets).toEqual(["r_a"]);
+    expect(s.takeClaim("toolu_abc")?.buckets).toEqual(["r_b"]);
+    s.writeClaim({ toolUseId: "old", buckets: ["r_a"], since: 1 });
+    const old = s.claimFile("old");
+    fs.utimesSync(old, new Date(Date.now() - 48 * 3_600_000), new Date(Date.now() - 48 * 3_600_000));
+    s.writeClaim({ toolUseId: "fresh", buckets: ["r_a"], since: 1 });
+    expect(s.pruneClaims()).toBe(1);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(s.takeClaim("fresh")).toBeDefined();
+  });
+
   it("falls back to scanning in-flight records", () => {
     const s = new Store(dir);
     s.writeLast("r_a", { label: "a", lastFinishedAt: null, inFlight: { since: 1, pid: 1, ownerPid: 1, toolUseId: "T" }, recent: [] });

@@ -175,8 +175,36 @@ export class Store {
   lastFile(key: string): string {
     return path.join(this.bucketDir(key), "last.json");
   }
+  get claimsDir(): string {
+    return path.join(this.dir, "claims");
+  }
   claimFile(toolUseId: string): string {
-    return path.join(this.dir, "claims", `${sanitizeKey(toolUseId)}.json`);
+    // Tool use ids are case-sensitive; keep case so two ids never share a file.
+    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 150);
+    return path.join(this.claimsDir, `${safe}.json`);
+  }
+
+  /** Delete claim files whose call never reported back (older than `maxAgeMs`). */
+  pruneClaims(maxAgeMs = 24 * HOUR_MS, now = Date.now()): number {
+    let removed = 0;
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.claimsDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      const file = path.join(this.claimsDir, name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
+          fs.unlinkSync(file);
+          removed++;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return removed;
   }
   get tabsFile(): string {
     return path.join(this.dir, "tabs.json");

@@ -152,13 +152,15 @@ async function handlePost(input: HookInput, store: Store, state: string): Promis
   const event = input.hook_event_name ?? "PostToolUse";
 
   if (toolName.startsWith(CHROME_PREFIX)) {
-    const entries = tabsFromResponse(input.tool_response);
+    // The requested URL is the fallback; what the extension reports back (post-redirect) wins.
+    const entries: Record<string, { host: string; url?: string }> = {};
     const tabId = tabIdOf(input.tool_input);
     if (event === "PostToolUse" && tabId !== undefined && input.tool_input && typeof input.tool_input === "object") {
       const url = (input.tool_input as Record<string, unknown>).url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
     }
+    Object.assign(entries, tabsFromResponse(input.tool_response));
     if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== undefined && event === "PostToolUse") {
       store.forgetTab(tabId);
     }

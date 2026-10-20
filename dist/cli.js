@@ -47,6 +47,7 @@ var DEFAULT_READ_ONLY_TOOLS = [
   "mcp__claude-in-chrome__shortcuts_list",
   "mcp__claude-in-chrome__update_plan"
 ];
+var MAX_WAIT_CEILING_MS = 29e4;
 var DEFAULT_CONFIG = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
@@ -187,6 +188,7 @@ function mergeConfigs(layers) {
     for (const r of layer.rules ?? []) rules.set(r.name, r);
     for (const r of layer.refuse ?? []) refuse.set(r.tool, r);
   }
+  cfg.maxWaitMs = Math.min(cfg.maxWaitMs, MAX_WAIT_CEILING_MS);
   cfg.readOnlyTools = [...readOnly];
   cfg.rules = [...rules.values()];
   cfg.refuse = [...refuse.values()];
@@ -342,8 +344,33 @@ var Store = class {
   lastFile(key) {
     return import_node_path.default.join(this.bucketDir(key), "last.json");
   }
+  get claimsDir() {
+    return import_node_path.default.join(this.dir, "claims");
+  }
   claimFile(toolUseId) {
-    return import_node_path.default.join(this.dir, "claims", `${sanitizeKey(toolUseId)}.json`);
+    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 150);
+    return import_node_path.default.join(this.claimsDir, `${safe}.json`);
+  }
+  /** Delete claim files whose call never reported back (older than `maxAgeMs`). */
+  pruneClaims(maxAgeMs = 24 * HOUR_MS, now = Date.now()) {
+    let removed = 0;
+    let names;
+    try {
+      names = import_node_fs2.default.readdirSync(this.claimsDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      const file = import_node_path.default.join(this.claimsDir, name);
+      try {
+        if (now - import_node_fs2.default.statSync(file).mtimeMs > maxAgeMs) {
+          import_node_fs2.default.unlinkSync(file);
+          removed++;
+        }
+      } catch {
+      }
+    }
+    return removed;
   }
   get tabsFile() {
     return import_node_path.default.join(this.dir, "tabs.json");
@@ -629,6 +656,7 @@ async function pace(store, buckets, claim, opts) {
 async function release(store, toolUseId, now = Date.now()) {
   const claim = store.takeClaim(toolUseId);
   const keys = claim?.buckets ?? store.bucketsInFlightFor(toolUseId);
+  if (!claim) store.pruneClaims(void 0, now);
   for (const key of keys) {
     await store.withLock(key, () => store.finish(key, toolUseId, now));
   }
@@ -785,7 +813,7 @@ function cmdStatus(args) {
     for (const r of rows) {
       const inflight = r.inFlight ? `${(r.inFlight.toolName ?? "?").replace("mcp__claude-in-chrome__", "chrome:")} ${ago(now - r.inFlight.since)}${r.inFlightOwnerAlive === false ? " (owner gone)" : ""}` : "\u2014";
       lines.push(
-        `${pad(r.label, w)}${pad(r.minIntervalMs === null ? "\u2014" : `${r.minIntervalMs}ms`, 10)}${pad(r.lastFinishedAt ? ago(now - r.lastFinishedAt) : "never", 14)}${pad(inMs(r.nextAllowedInMs), 14)}${pad(inflight, 34)}${pad(String(r.lastHour), 11)}${r.totalCalls}`
+        `${pad(r.label, w)}${pad(r.minIntervalMs === null ? "\u2014" : `${r.minIntervalMs}ms`, 10)}${pad(r.lastFinishedAt ? ago(now - r.lastFinishedAt) : "never", 14)}${pad(r.inFlight ? `+${(r.minIntervalMs ?? 0) / 1e3}s after it` : inMs(r.nextAllowedInMs), 14)}${pad(inflight, 34)}${pad(String(r.lastHour), 11)}${r.totalCalls}`
       );
     }
   }

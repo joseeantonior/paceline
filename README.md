@@ -101,12 +101,12 @@ $ paceline status
 paceline 0.1.0   state: /home/you/.cache/paceline
 config: /home/you/.claude/paceline.json
 
-TARGET                     INTERVAL  LAST CALL     NEXT ALLOWED  IN FLIGHT                         LAST HOUR  TOTAL
-github-api (api.github.com) 1000ms   0.4s ago      in 0.6s       —                                 14         212
-social (*.example.com)     10000ms   3.1s ago      in 6.9s       —                                 5          61
-shops (a.myshopify.com)    2000ms    2m ago        now           —                                 0          3
+TARGET                       INTERVAL  LAST CALL     NEXT ALLOWED  IN FLIGHT                         LAST HOUR  TOTAL
+github-api (api.github.com)  1000ms    1.0s ago      +1s after it  WebFetch 44ms ago                 3          3
+shops (a.myshopify.com)      2000ms    956ms ago     in 1.0s       —                                 1          1
+social (*.example.com)       10000ms   870ms ago     in 9.1s       —                                 1          1
 
-browser tabs mapped: 2 (41→www.example.com, 42→a.myshopify.com)
+browser tabs mapped: 1 (41→www.example.com)
 ```
 
 ## Configuration
@@ -114,7 +114,11 @@ browser tabs mapped: 2 (41→www.example.com, 42→a.myshopify.com)
 Two files, merged in order: `~/.claude/paceline.json` (user), then `<project>/.claude/paceline.json`
 (project). Scalars from the project file win; `rules` merge by `name` and `refuse` by `tool`, so a
 project can tighten one rule without repeating the rest. `PACELINE_CONFIG=<file>` replaces the
-user file.
+user file; `PACELINE_NO_PROJECT_CONFIG=1` ignores project files.
+
+A project file can also *loosen* a user rule of the same name. If you work in repositories you do
+not control, give your personal rules names a repository is unlikely to reuse, or set
+`PACELINE_NO_PROJECT_CONFIG=1`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -126,9 +130,9 @@ user file.
 | `rules[].maxPerHour` | — | Rolling cap. The call is refused (with the time of the next free slot) rather than waited for when the slot is more than `maxWaitMs` away. |
 | `refuse[]` | `[]` | `{ "tool": "<name or glob>", "reason": "…" }`: deny a tool outright. Claude sees the reason. |
 | `defaultMinIntervalMs` | `0` | Gap for hosts that match no rule. `0` means pass through. |
-| `unknownTargetPolicy` | `"pace-all"` | A browser action on a tab whose site is not yet known: `pace-all` counts it against every rule; `ignore` lets it through. |
+| `unknownTargetPolicy` | `"pace-all"` | A browser action on a tab whose site is not yet known: `pace-all` counts it against every rule (a `perHost` rule is counted as a whole, since the host is unknown); `ignore` lets it through. |
 | `inFlightHoldMs` | `120000` | How long a claimed call blocks others if its `PostToolUse` never arrives. |
-| `maxWaitMs` | `240000` | Longest a hook will wait before refusing the call with a retry hint. Keep it under the hook timeout (300 s). |
+| `maxWaitMs` | `240000` | Longest a hook will wait before refusing the call with a retry hint. Capped at 290 000 because the hook itself times out (and blocks) at 300 s. |
 | `notifyAfterMs` | `1000` | Waits at least this long produce a visible `paceline: waited …` message. |
 | `refuseUnpaceable` | `true` | Deny `browser_batch` and `javascript_tool` scripts with 2+ `fetch(` calls when they target a paced site. |
 | `readOnlyTools` | see below | Tool names that never touch the site. Your list is added to the built-in one. |
@@ -214,7 +218,7 @@ Claude Code hooks use.
 the matching `post` as each one is released, then reads the claim and finish timestamps the hooks
 themselves wrote. It passes only if every finish→start gap is at least the interval and the wall
 time is at least `(calls − 1) × interval`. Run it after installing, and whenever you touch the
-code. CI runs it on Linux, macOS and Windows.
+code. The CI workflow in `ci/` runs it on Linux, macOS and Windows.
 
 ## Why a hook and not a `CLAUDE.md` rule
 
@@ -235,6 +239,9 @@ call, which closes the one hole the Rulestack post listed.
 - **Hook waits happen before the permission prompt.** If you take five minutes to approve a call,
   the claim's hold expires after `inFlightHoldMs` and the next caller may go first. Approve
   promptly or raise the hold.
+- **The browser tab → site map is heuristic.** It is learned from `navigate` calls and from URLs
+  the extension returns next to tab ids. When a tab is unknown, `pace-all` over-waits rather than
+  under-waits, and the message tells you so. `paceline status` shows the current map.
 - **A page's own requests are not paced.** paceline spaces the agent's actions, not the dozen
   XHRs a page fires when it loads.
 - **Bash matching is best-effort.** `curl $URL` with the URL in a variable is invisible. Prefer

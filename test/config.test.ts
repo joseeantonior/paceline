@@ -85,6 +85,10 @@ describe("mergeConfigs", () => {
     expect(cfg.readOnlyTools).toEqual([...DEFAULT_READ_ONLY_TOOLS, "ro1", "ro2"]);
     expect(cfg.inFlightHoldMs).toBe(120_000);
   });
+  it("clamps maxWaitMs under the hook timeout", () => {
+    expect(mergeConfigs([{ maxWaitMs: 10_000_000 }]).maxWaitMs).toBe(290_000);
+    expect(mergeConfigs([{ maxWaitMs: 5_000 }]).maxWaitMs).toBe(5_000);
+  });
   it("with no layers equals the defaults", () => {
     const cfg = mergeConfigs([]);
     expect(cfg.rules).toEqual([]);
