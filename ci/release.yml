@@ -1,0 +1,30 @@
+# Publishes to npm when a v* tag is pushed. Copy to .github/workflows/release.yml.
+# Needs an npm automation token saved as the NPM_TOKEN repository secret
+# (Settings → Secrets and variables → Actions). --provenance links the package
+# to this repository and commit on npmjs.com.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run check
+      - name: tag matches package.json version
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
