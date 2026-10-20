@@ -135,6 +135,7 @@ not control, give your personal rules names a repository is unlikely to reuse, o
 | `maxWaitMs` | `240000` | Longest a hook will wait before refusing the call with a retry hint. Capped at 290 000 because the hook itself times out (and blocks) at 300 s. |
 | `notifyAfterMs` | `1000` | Waits at least this long produce a visible `paceline: waited …` message. |
 | `refuseUnpaceable` | `true` | Deny `browser_batch` and `javascript_tool` scripts with 2+ `fetch(` calls when they target a paced site. |
+| `reclaimOnOwnerExit` | `true` | Release an in-flight hold as soon as the Claude Code process that made the claim has exited. Set to `false` if you run the hook through a wrapper shell, where the parent pid is not the long-lived session. |
 | `readOnlyTools` | see below | Tool names that never touch the site. Your list is added to the built-in one. |
 | `staleLockMs` | `900000` | A lock directory older than this is reclaimed even if its owner looks alive. |
 
@@ -154,11 +155,13 @@ paceline does not configure tools; it reads **where the call is going** from the
 | --- | --- |
 | `WebFetch`, browser `navigate`, any tool with a URL | The URL's hostname. |
 | `Bash` | Every `http(s)://host` in the command, `git@host:` remotes, bare hosts after `curl`/`wget`/`http`, and `gh …` ⇒ `api.github.com`. `ls`, `npm test` and friends pass in about 45 ms. |
-| Claude in Chrome actions on a tab (`computer`, `form_input`, `javascript_tool`, …) | The site that tab was last navigated to. The tab → site map is learned from `navigate` calls and from the tab lists the extension returns, and kept in `tabs.json`. Unknown tab ⇒ `unknownTargetPolicy`. |
-| Other MCP tools | Any `url`, `uri`, `endpoint`, `base_url`, `href`, `host` field in the input, two levels deep. |
+| Claude in Chrome actions on a tab (`computer`, `form_input`, `javascript_tool`, …) | The site that tab was last navigated to. The tab → site map is learned only from `navigate` calls and from the tab listings `tabs_context_mcp` returns, never from page content, and kept in `tabs.json`. Unknown tab ⇒ `unknownTargetPolicy`. |
+| Any other MCP tool (`mcp__*`) | Any `url`, `uri`, `endpoint`, `base_url`, `href`, `host` field in the input, two levels deep. |
 
 Hosts that match no rule are untouched (unless `defaultMinIntervalMs` is set). `WebSearch` is
-never paced: it is not a site you hold an account on.
+never paced: it is not a site you hold an account on. `gh` resolves to `api.github.com` and a
+`git@github.com:` remote to `github.com`; a rule that should cover both lists both, as the example
+config does.
 
 ## How the gap is enforced
 
@@ -173,10 +176,13 @@ PostToolUse ──►  for each claimed bucket: lastFinishedAt = now, clear in-f
   `paceline.log`. It is deliberately not under the plugin's own data directory so that the CLI,
   `paceline run`, and hooks loaded any way at all share one throttle.
 - The lock is `mkdir`: atomic on every platform. It is held only around the read-decide-write,
-  never while sleeping. A lock whose owner pid is dead, or older than 15 minutes, is reclaimed.
+  never while sleeping. A lock whose owner pid is dead, or older than `staleLockMs`, is reclaimed
+  by renaming it away, so of several contenders exactly one reclaims and none deletes a lock
+  someone else just took.
 - A claimed call that never reports back (the session crashed) blocks its bucket for
   `inFlightHoldMs`, or until the Claude Code process that made the claim is gone, whichever is
-  first. `PostToolUseFailure` and `PermissionDenied` release the hold like a normal finish.
+  first. `PostToolUseFailure` and `PermissionDenied` release the hold like a normal finish. A
+  hook that throws after claiming some buckets releases them before failing.
 - Several buckets are claimed in sorted order, so two hooks claiming the same pair cannot deadlock.
 - **Fail closed.** The hook is registered with `onFailure: "block"` and a 300 s timeout. If
   `dist/hook.js` is missing, Node is missing, the hook crashes, or a wait would outlast
@@ -218,7 +224,8 @@ Claude Code hooks use.
 the matching `post` as each one is released, then reads the claim and finish timestamps the hooks
 themselves wrote. It passes only if every finish→start gap is at least the interval and the wall
 time is at least `(calls − 1) × interval`. Run it after installing, and whenever you touch the
-code. The CI workflow in `ci/` runs it on Linux, macOS and Windows.
+code. The CI workflow in `ci/` runs it on Linux, macOS and Windows. Every `Bash`, `WebFetch` and
+`mcp__*` call passes through the hook; one that touches no paced host costs about 45 ms.
 
 ## Why a hook and not a `CLAUDE.md` rule
 
@@ -238,14 +245,18 @@ call, which closes the one hole the Rulestack post listed.
   paced site (`refuseUnpaceable`), because the alternative is pretending.
 - **Hook waits happen before the permission prompt.** If you take five minutes to approve a call,
   the claim's hold expires after `inFlightHoldMs` and the next caller may go first. Approve
-  promptly or raise the hold.
+  promptly or raise the hold. The same hold bounds the damage when a call never reports back
+  (another hook denied it, the turn was interrupted, or a single call runs longer than
+  `inFlightHoldMs`): after it, the next caller proceeds even if the first is still running.
 - **The browser tab → site map is heuristic.** It is learned from `navigate` calls and from URLs
   the extension returns next to tab ids. When a tab is unknown, `pace-all` over-waits rather than
   under-waits, and the message tells you so. `paceline status` shows the current map.
 - **A page's own requests are not paced.** paceline spaces the agent's actions, not the dozen
   XHRs a page fires when it loads.
-- **Bash matching is best-effort.** `curl $URL` with the URL in a variable is invisible. Prefer
-  literal URLs in agent-issued commands, or route scripts through `paceline run`.
+- **Bash matching is best-effort.** `curl $URL` with the URL in a variable is invisible, and `gh`
+  is recognised as a command word in the common positions (`&&`, `;`, `|`, `then`, `sudo`, …) but
+  not in every shell construct. Prefer literal URLs in agent-issued commands, or route scripts
+  through `paceline run`.
 - **One machine.** The lock is a directory on local disk. Multi-machine pacing needs a shared
   service; see the roadmap.
 - `${CLAUDE_PLUGIN_ROOT}` changes on every plugin update, which is why no state is kept there.

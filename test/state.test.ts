@@ -21,8 +21,8 @@ describe("computeWaitMs", () => {
     expect(computeWaitMs({ lastFinishedAt: 1000, nowMs: 1000, minIntervalMs: 0 })).toBe(0);
     expect(computeWaitMs({ lastFinishedAt: 1000, nowMs: 1000, minIntervalMs: -5 })).toBe(0);
   });
-  it("tolerates a clock that went backwards", () => {
-    expect(computeWaitMs({ lastFinishedAt: 10_000, nowMs: 5_000, minIntervalMs: 1000 })).toBe(6000);
+  it("never waits more than one interval when the clock stepped backwards", () => {
+    expect(computeWaitMs({ lastFinishedAt: 10_000, nowMs: 5_000, minIntervalMs: 1000 })).toBe(1000);
   });
   it("ignores garbage", () => {
     expect(computeWaitMs({ lastFinishedAt: NaN, nowMs: 1, minIntervalMs: 1 })).toBe(0);
@@ -187,11 +187,40 @@ describe("Store", () => {
     expect(s.takeClaim("fresh")).toBeDefined();
   });
 
-  it("falls back to scanning in-flight records", () => {
+  it("does not reclaim a fresh lock that replaced a stale one between read and rename", async () => {
+    // Simulate: contender sees a stale owner, but before it renames, a new holder has taken the lock.
+    const s = new Store(dir, { lockTimeoutMs: 300 });
+    fs.mkdirSync(s.lockDir("r_x"), { recursive: true });
+    fs.writeFileSync(path.join(s.lockDir("r_x"), "owner.json"), JSON.stringify({ pid: process.pid, since: Date.now() }));
+    // A live, fresh lock must not be touched, and acquisition must time out instead.
+    await expect(s.acquireLock("r_x")).rejects.toThrow(/timed out/);
+    expect(JSON.parse(fs.readFileSync(path.join(s.lockDir("r_x"), "owner.json"), "utf8")).pid).toBe(process.pid);
+  });
+
+  it("many contenders against a stale lock: exactly one holder at a time, nobody crashes", async () => {
+    const s = new Store(dir, { lockTimeoutMs: 5000 });
+    fs.mkdirSync(s.lockDir("r_x"), { recursive: true });
+    fs.writeFileSync(path.join(s.lockDir("r_x"), "owner.json"), JSON.stringify({ pid: 4194303, since: Date.now() }));
+    let inside = 0;
+    let maxInside = 0;
+    await Promise.all(
+      Array.from({ length: 12 }, () =>
+        s.withLock("r_x", async () => {
+          inside++;
+          maxInside = Math.max(maxInside, inside);
+          await new Promise((r) => setTimeout(r, 3));
+          inside--;
+        }),
+      ),
+    );
+    expect(maxInside).toBe(1);
+    expect(fs.existsSync(s.lockDir("r_x"))).toBe(false);
+    expect(fs.readdirSync(s.bucketDir("r_x")).filter((n) => n.includes("reclaim"))).toEqual([]);
+  });
+
+  it("inFlightActive can ignore a dead owner when asked", () => {
     const s = new Store(dir);
-    s.writeLast("r_a", { label: "a", lastFinishedAt: null, inFlight: { since: 1, pid: 1, ownerPid: 1, toolUseId: "T" }, recent: [] });
-    s.writeLast("r_b", { label: "b", lastFinishedAt: null, inFlight: null, recent: [] });
-    expect(s.bucketsInFlightFor("T")).toEqual(["r_a"]);
+    expect(s.inFlightActive({ since: 0, pid: 1, ownerPid: 4194303 }, 1000, 500, false)).toBe(true);
   });
 
   it("tabs map updates, forgets and prunes", () => {

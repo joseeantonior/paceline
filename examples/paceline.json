@@ -4,7 +4,7 @@
   "inFlightHoldMs": 120000,
   "rules": [
     { "name": "social",     "target": "*.example.com",   "minIntervalMs": 10000, "maxPerHour": 150 },
-    { "name": "github-api", "target": "api.github.com",  "minIntervalMs": 1000 },
+    { "name": "github",     "target": ["api.github.com", "github.com"], "minIntervalMs": 1000 },
     { "name": "shops",      "target": "*.myshopify.com", "minIntervalMs": 2000, "perHost": true }
   ],
   "refuse": [

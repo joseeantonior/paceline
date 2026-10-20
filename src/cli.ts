@@ -183,17 +183,22 @@ function cmdReset(args: string[]): void {
   const target = args.find((a) => !a.startsWith("--"));
   if (!target) die("reset needs a target, --all, or --tabs", 64);
   const { config } = loadCfg();
+  const existing = store.listBuckets();
   const want = new Set<string>();
-  const rule = config.rules.find((r) => r.name === target);
-  if (rule) want.add(ruleKey(rule.name));
+  const addRule = (name: string): void => {
+    want.add(ruleKey(name));
+    const prefix = `${ruleKey(name)}__`;
+    for (const k of existing) if (k.startsWith(prefix)) want.add(k); // perHost buckets
+  };
   for (const r of config.rules) {
-    if (ruleTargets(r).some((t) => hostMatches(t, target))) {
-      want.add(ruleKey(r.name));
+    if (r.name === target) addRule(r.name);
+    // `reset '*.myshopify.com'` names the rule by its glob; `reset a.myshopify.com` names a host it covers.
+    if (ruleTargets(r).some((t) => t === target || hostMatches(t, target))) {
+      addRule(r.name);
       want.add(hostKey(target, r.name));
     }
   }
   want.add(hostKey(target));
-  const existing = store.listBuckets();
   if (existing.includes(target)) want.add(target);
   for (const k of existing) {
     if (store.readLast(k).label === target) want.add(k);

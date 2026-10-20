@@ -4,7 +4,10 @@ import { logLine } from "./log.js";
 import { allRuleBuckets, bucketsFor, pace, release, type Bucket } from "./pacer.js";
 import { projectConfigPath, projectDir, stateDir, userConfigPath } from "./paths.js";
 import { Store } from "./state.js";
-import { CHROME_PREFIX, hostFromUrl, resolveTargets, tabIdOf, tabsFromResponse, unpaceableReason, type HookInput } from "./targets.js";
+import { CHROME_PREFIX, hostFromUrl, isLoopback, resolveTargets, tabIdOf, tabsFromResponse, unpaceableReason, type HookInput } from "./targets.js";
+
+/** Tools whose results list the open tabs with their URLs. Only these may teach the tab → site map. */
+const TAB_LISTING_TOOLS = new Set([`${CHROME_PREFIX}tabs_context_mcp`, `${CHROME_PREFIX}list_tabs`, `${CHROME_PREFIX}tabs_create_mcp`]);
 
 type Mode = "pre" | "post";
 
@@ -39,9 +42,15 @@ function fmtWait(ms: number): string {
   return ms >= 10_000 ? `${Math.round(ms / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+/** Lock acquisition budget; overridable for tests. */
+function lockTimeoutMs(): number {
+  const v = Number(process.env.PACELINE_LOCK_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 30_000;
+}
+
 function toolUseIdFor(input: HookInput): string {
   if (typeof input.tool_use_id === "string" && input.tool_use_id) return input.tool_use_id;
-  return `${input.session_id ?? "nosession"}:${input.tool_name ?? "notool"}`;
+  return `${typeof input.session_id === "string" ? input.session_id : "nosession"}:${typeof input.tool_name === "string" ? input.tool_name : "notool"}`;
 }
 
 function short(s: string | undefined, n = 60): string {
@@ -49,19 +58,22 @@ function short(s: string | undefined, n = 60): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-async function handlePre(input: HookInput, store: Store, state: string): Promise<void> {
-  const toolName = input.tool_name;
+async function handlePre(input: HookInput, state: string): Promise<void> {
+  const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
   if (!toolName) return;
+  const cwd = typeof input.cwd === "string" ? input.cwd : undefined;
 
   let config: Config;
   let configError: ConfigError | undefined;
   try {
-    config = loadConfig([userConfigPath(), (() => { const p = projectDir(input.cwd); return p ? projectConfigPath(p) : undefined; })()]).config;
+    const proj = projectDir(cwd);
+    config = loadConfig([userConfigPath(), proj ? projectConfigPath(proj) : undefined]).config;
   } catch (e) {
     if (!(e instanceof ConfigError)) throw e;
     configError = e;
     config = DEFAULT_CONFIG;
   }
+  const store = new Store(state, { lockTimeoutMs: lockTimeoutMs(), staleLockMs: config.staleLockMs });
 
   const tabs = toolName.startsWith(CHROME_PREFIX) ? store.readTabs() : {};
   const resolved = resolveTargets(input, tabs, config.readOnlyTools);
@@ -69,7 +81,7 @@ async function handlePre(input: HookInput, store: Store, state: string): Promise
 
   if (configError) {
     // Fail closed only for calls that actually reach a network host.
-    if (resolved.hosts.length > 0 || resolved.unknownTab !== undefined) {
+    if (resolved.hosts.some((h) => !isLoopback(h)) || resolved.unknownTab !== undefined) {
       logLine(state, `pre DENY ${toolName} config error: ${configError.message}`);
       deny(`paceline: your config is invalid, so external calls are blocked until it is fixed. ${configError.message}`);
     }
@@ -90,7 +102,7 @@ async function handlePre(input: HookInput, store: Store, state: string): Promise
       logLine(state, `pre PASS ${toolName} unknown tab ${resolved.unknownTab} (policy ${config.unknownTargetPolicy})`);
       return;
     }
-    buckets = allRuleBuckets(config);
+    buckets = allRuleBuckets(config, store);
     notes.push(
       `paceline: tab ${resolved.unknownTab} has no known site yet, so this call was paced against all ${buckets.length} rule(s) (unknownTargetPolicy: pace-all). Navigate in the tab first, or set "unknownTargetPolicy": "ignore".`,
     );
@@ -119,7 +131,7 @@ async function handlePre(input: HookInput, store: Store, state: string): Promise
       agentId: input.agent_id,
       ownerPid: process.ppid,
     },
-    { deadlineMs: Date.now() + config.maxWaitMs, inFlightHoldMs: config.inFlightHoldMs },
+    { deadlineMs: Date.now() + config.maxWaitMs, inFlightHoldMs: config.inFlightHoldMs, reclaimOnOwnerExit: config.reclaimOnOwnerExit },
   );
 
   const labels = buckets.map((b) => b.label).join(", ");
@@ -144,26 +156,27 @@ async function handlePre(input: HookInput, store: Store, state: string): Promise
   }
 }
 
-async function handlePost(input: HookInput, store: Store, state: string): Promise<void> {
-  const toolName = input.tool_name ?? "";
+async function handlePost(input: HookInput, state: string): Promise<void> {
+  const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
   const toolUseId = toolUseIdFor(input);
   const now = Date.now();
+  const store = new Store(state, { lockTimeoutMs: lockTimeoutMs() });
   const released = await release(store, toolUseId, now);
   const event = input.hook_event_name ?? "PostToolUse";
 
-  if (toolName.startsWith(CHROME_PREFIX)) {
-    // The requested URL is the fallback; what the extension reports back (post-redirect) wins.
+  if (toolName.startsWith(CHROME_PREFIX) && event === "PostToolUse") {
+    // Page content (get_page_text, read_page, find …) must never teach the tab map: a page that
+    // mentions "id 42 … https://other.site" would re-home tab 42. Only a navigation we issued and
+    // the extension's own tab listings are trusted.
     const entries: Record<string, { host: string; url?: string }> = {};
     const tabId = tabIdOf(input.tool_input);
-    if (event === "PostToolUse" && tabId !== undefined && input.tool_input && typeof input.tool_input === "object") {
+    if (toolName === `${CHROME_PREFIX}navigate` && tabId !== undefined && input.tool_input && typeof input.tool_input === "object") {
       const url = (input.tool_input as Record<string, unknown>).url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
     }
-    Object.assign(entries, tabsFromResponse(input.tool_response));
-    if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== undefined && event === "PostToolUse") {
-      store.forgetTab(tabId);
-    }
+    if (TAB_LISTING_TOOLS.has(toolName)) Object.assign(entries, tabsFromResponse(input.tool_response));
+    if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== undefined) store.forgetTab(tabId);
     if (Object.keys(entries).length > 0) store.updateTabs(entries, now);
   }
   if (released.length > 0 || event !== "PostToolUse") {
@@ -191,11 +204,9 @@ async function main(): Promise<void> {
   if (!input || typeof input !== "object") return;
 
   const state = stateDir();
-  // staleLockMs comes from config, but the store is needed before config is loaded; default is fine for locks.
-  const store = new Store(state, { lockTimeoutMs: 30_000 });
   try {
-    if (mode === "pre") await handlePre(input, store, state);
-    else await handlePost(input, store, state);
+    if (mode === "pre") await handlePre(input, state);
+    else await handlePost(input, state);
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     logLine(state, `${mode} ERROR ${input.tool_name ?? ""}: ${msg}`);
@@ -207,7 +218,11 @@ async function main(): Promise<void> {
 }
 
 void main().then(
-  () => process.exit(0),
+  () => {
+    // Let stdout drain naturally (pipes are async on some platforms); the unref'd timer only fires if something hangs.
+    process.exitCode = 0;
+    setTimeout(() => process.exit(0), 2_000).unref();
+  },
   (e) => {
     process.stderr.write(`paceline: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
     process.exit(1); // onFailure: "block" turns this into a denial

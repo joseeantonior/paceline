@@ -27,6 +27,8 @@ export interface Config {
   maxWaitMs: number;
   notifyAfterMs: number;
   refuseUnpaceable: boolean;
+  /** Release an in-flight hold early when the Claude Code process that claimed it is gone. */
+  reclaimOnOwnerExit: boolean;
   readOnlyTools: string[];
   rules: Rule[];
   refuse: RefuseRule[];
@@ -61,6 +63,7 @@ export const DEFAULT_CONFIG: Config = {
   maxWaitMs: 240_000,
   notifyAfterMs: 1_000,
   refuseUnpaceable: true,
+  reclaimOnOwnerExit: true,
   readOnlyTools: [...DEFAULT_READ_ONLY_TOOLS],
   rules: [],
   refuse: [],
@@ -146,6 +149,7 @@ export function validatePartial(raw: unknown, file: string): Partial_ {
     "maxWaitMs",
     "notifyAfterMs",
     "refuseUnpaceable",
+    "reclaimOnOwnerExit",
     "readOnlyTools",
     "rules",
     "refuse",
@@ -168,6 +172,10 @@ export function validatePartial(raw: unknown, file: string): Partial_ {
   if (raw.refuseUnpaceable !== undefined) {
     if (typeof raw.refuseUnpaceable !== "boolean") throw new ConfigError(file, "refuseUnpaceable must be a boolean");
     out.refuseUnpaceable = raw.refuseUnpaceable;
+  }
+  if (raw.reclaimOnOwnerExit !== undefined) {
+    if (typeof raw.reclaimOnOwnerExit !== "boolean") throw new ConfigError(file, "reclaimOnOwnerExit must be a boolean");
+    out.reclaimOnOwnerExit = raw.reclaimOnOwnerExit;
   }
   if (raw.readOnlyTools !== undefined) out.readOnlyTools = stringArray(raw.readOnlyTools, "readOnlyTools", file);
   if (raw.rules !== undefined) {
@@ -202,6 +210,7 @@ export function mergeConfigs(layers: Partial_[]): Config {
     }
     if (layer.unknownTargetPolicy !== undefined) cfg.unknownTargetPolicy = layer.unknownTargetPolicy;
     if (layer.refuseUnpaceable !== undefined) cfg.refuseUnpaceable = layer.refuseUnpaceable;
+    if (layer.reclaimOnOwnerExit !== undefined) cfg.reclaimOnOwnerExit = layer.reclaimOnOwnerExit;
     for (const t of layer.readOnlyTools ?? []) readOnly.add(t);
     for (const r of layer.rules ?? []) rules.set(r.name, r);
     for (const r of layer.refuse ?? []) refuse.set(r.tool, r);

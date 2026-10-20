@@ -32,7 +32,8 @@ export function projectConfigPath(projectDir: string): string {
 }
 
 /** The project root for per-project config: CLAUDE_PROJECT_DIR, else the hook's cwd. */
-export function projectDir(hookCwd: string | undefined, env: Env = process.env): string | undefined {
-  if (env.PACELINE_NO_PROJECT_CONFIG) return undefined;
-  return env.CLAUDE_PROJECT_DIR ?? hookCwd;
+export function projectDir(hookCwd: unknown, env: Env = process.env): string | undefined {
+  if (env.PACELINE_NO_PROJECT_CONFIG && env.PACELINE_NO_PROJECT_CONFIG !== "0") return undefined;
+  if (env.CLAUDE_PROJECT_DIR) return env.CLAUDE_PROJECT_DIR;
+  return typeof hookCwd === "string" && hookCwd ? hookCwd : undefined;
 }

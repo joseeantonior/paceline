@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "matcher": "^(mcp__.*|WebFetch|Bash)$",
         "hooks": [
           {
             "type": "command",
@@ -18,7 +18,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "matcher": "^(mcp__.*|WebFetch|Bash)$",
         "hooks": [
           {
             "type": "command",
@@ -31,7 +31,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "matcher": "^(mcp__.*|WebFetch|Bash)$",
         "hooks": [
           {
             "type": "command",
@@ -44,7 +44,7 @@
     ],
     "PermissionDenied": [
       {
-        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "matcher": "^(mcp__.*|WebFetch|Bash)$",
         "hooks": [
           {
             "type": "command",

@@ -37,6 +37,8 @@ describe("hostsFromCommand", () => {
     expect(hostsFromCommand("cd x && gh api repos/o/r")).toEqual(["api.github.com"]);
     expect(hostsFromCommand("GH_TOKEN=x gh issue create")).toEqual(["api.github.com"]);
     expect(hostsFromCommand("echo $(gh pr view 1)")).toEqual(["api.github.com"]);
+    expect(hostsFromCommand("if true; then gh pr merge 1; fi")).toEqual(["api.github.com"]);
+    expect(hostsFromCommand("sudo gh auth status")).toEqual(["api.github.com"]);
     expect(hostsFromCommand("ghostscript file.ps")).toEqual([]);
     expect(hostsFromCommand("hugh -x")).toEqual([]);
   });
@@ -150,6 +152,7 @@ describe("tabsFromResponse", () => {
   it("ignores junk", () => {
     expect(tabsFromResponse(null)).toEqual({});
     expect(tabsFromResponse("no tabs here")).toEqual({});
+    expect(tabsFromResponse("your order is valid 42 days, see https://tracking.other.net/x")).toEqual({});
     expect(tabsFromResponse({ id: 1 })).toEqual({});
   });
 });

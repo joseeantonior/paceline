@@ -14,3 +14,16 @@ First release.
 - Optional `maxPerHour` rolling cap and `perHost` buckets per rule.
 - CLI: `status`, `reset`, `run`, `test`, `config`, `log`, `paths`.
 - Fail-closed: hook crashes, timeouts and invalid config block external calls.
+
+### Hardening after independent review (same day)
+
+- Tab → site map is learned only from `navigate` and the extension's own tab
+  listings, never from page content.
+- Stale-lock reclaim renames the lock away (one winner) and re-verifies before
+  deleting; a reclaimed-from-under-us mkdir is retried, not thrown.
+- A hook that throws after claiming some buckets releases them first.
+- `unknownTargetPolicy: pace-all` also claims existing per-host buckets.
+- Every `mcp__*` tool reaches the hook (README promised this; the matcher did not).
+- `paceline reset` understands per-host rules and glob targets.
+- Clock steps backwards no longer lock a bucket; `maxWaitMs` capped under the hook timeout.
+- `reclaimOnOwnerExit` config switch; `staleLockMs` is honoured by the hook.

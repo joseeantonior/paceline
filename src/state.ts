@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -14,7 +15,9 @@ export function computeWaitMs({ lastFinishedAt, nowMs, minIntervalMs }: WaitArgs
   if (lastFinishedAt === null || lastFinishedAt === undefined) return 0;
   if (!Number.isFinite(lastFinishedAt) || !Number.isFinite(nowMs) || !Number.isFinite(minIntervalMs)) return 0;
   if (minIntervalMs <= 0) return 0;
-  return Math.max(0, Math.floor(lastFinishedAt + minIntervalMs - nowMs));
+  // A stamp in the future means the clock stepped backwards; never wait longer than one interval.
+  const last = Math.min(lastFinishedAt, nowMs);
+  return Math.max(0, Math.floor(last + minIntervalMs - nowMs));
 }
 
 export const HOUR_MS = 3_600_000;
@@ -109,23 +112,31 @@ export function hostKey(host: string, ruleName?: string): string {
   return ruleName ? `r_${sanitizeKey(ruleName)}__${sanitizeKey(host)}` : `h_${sanitizeKey(host)}`;
 }
 
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function writeAtomic(file: string, data: unknown): void {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(data));
-  try {
-    fs.renameSync(tmp, file);
-  } catch (e) {
-    // Windows can refuse to rename over an open file; fall back to a plain write.
+  // Windows can refuse to rename over a file another process has open for a moment; retry briefly.
+  for (let attempt = 0; ; attempt++) {
     try {
-      fs.writeFileSync(file, JSON.stringify(data));
-    } finally {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 20) {
+        sleepSync(5);
+        continue;
+      }
       try {
         fs.unlinkSync(tmp);
       } catch {
         /* ignore */
       }
+      throw e;
     }
-    if ((e as NodeJS.ErrnoException).code !== "EPERM" && (e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
   }
 }
 
@@ -179,9 +190,10 @@ export class Store {
     return path.join(this.dir, "claims");
   }
   claimFile(toolUseId: string): string {
-    // Tool use ids are case-sensitive; keep case so two ids never share a file.
-    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 150);
-    return path.join(this.claimsDir, `${safe}.json`);
+    // Tool use ids are case-sensitive; a short hash keeps two ids apart even on case-insensitive filesystems.
+    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 100);
+    const hash = crypto.createHash("sha1").update(toolUseId).digest("hex").slice(0, 10);
+    return path.join(this.claimsDir, `${safe}-${hash}.json`);
   }
 
   /** Delete claim files whose call never reported back (older than `maxAgeMs`). */
@@ -224,29 +236,52 @@ export class Store {
 
   /* ----- lock ----- */
 
-  /** Returns true if the lock was removed (dead owner or too old). */
-  private reclaimIfStale(lockDir: string): boolean {
-    const owner = readJson<{ pid?: number; since?: number }>(path.join(lockDir, "owner.json"));
-    let stale = false;
+  private readOwner(lockDir: string): { pid?: number; since?: number } | undefined {
+    return readJson<{ pid?: number; since?: number }>(path.join(lockDir, "owner.json"));
+  }
+
+  private isStale(lockDir: string, owner: { pid?: number; since?: number } | undefined): boolean {
     if (owner === undefined) {
       // Half-created lock: give the creator a moment, then treat as stale.
       try {
-        const st = fs.statSync(lockDir);
-        stale = Date.now() - st.mtimeMs > 2_000;
+        return Date.now() - fs.statSync(lockDir).mtimeMs > 2_000;
       } catch {
-        return true; // vanished
+        return true; // vanished; the caller retries mkdir
       }
-    } else {
-      const age = Date.now() - (owner.since ?? 0);
-      stale = age > this.staleLockMs || (typeof owner.pid === "number" && !pidAlive(owner.pid));
     }
-    if (!stale) return false;
+    const age = Date.now() - (owner.since ?? 0);
+    return age > this.staleLockMs || (typeof owner.pid === "number" && !pidAlive(owner.pid));
+  }
+
+  /**
+   * Remove a stale lock so the caller can retry mkdir. Reclaim is done by
+   * renaming the lock directory to a unique name: rename is atomic, so of
+   * several contenders exactly one wins, and the winner then checks that what
+   * it grabbed is still the stale lock it saw (not a fresh one taken in
+   * between) before deleting it. Returns true if the caller should retry now.
+   */
+  private reclaimIfStale(lockDir: string): boolean {
+    const seen = this.readOwner(lockDir);
+    if (!this.isStale(lockDir, seen)) return false;
+    const grave = `${lockDir}.reclaim.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
     try {
-      fs.rmSync(lockDir, { recursive: true, force: true });
-      return true;
+      fs.renameSync(lockDir, grave);
     } catch {
-      return false;
+      return true; // someone else reclaimed it, or it vanished: retry mkdir
     }
+    const got = this.readOwner(grave);
+    const same = got?.pid === seen?.pid && got?.since === seen?.since;
+    if (!same && !this.isStale(grave, got)) {
+      // A fresh lock was taken between our read and our rename: give it back.
+      try {
+        fs.renameSync(grave, lockDir);
+      } catch {
+        fs.rmSync(grave, { recursive: true, force: true });
+      }
+      return true;
+    }
+    fs.rmSync(grave, { recursive: true, force: true });
+    return true;
   }
 
   async acquireLock(key: string): Promise<() => void> {
@@ -257,21 +292,28 @@ export class Store {
     for (;;) {
       try {
         fs.mkdirSync(lockDir);
-        fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, since: Date.now() }));
-        return () => {
-          try {
-            fs.rmSync(lockDir, { recursive: true, force: true });
-          } catch {
-            /* ignore */
-          }
-        };
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
         if (this.reclaimIfStale(lockDir)) continue;
         if (Date.now() > deadline) throw new LockTimeout(lockDir);
         await sleep(backoff + Math.floor(Math.random() * 10));
         backoff = Math.min(backoff * 2, 100);
+        continue;
       }
+      try {
+        fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, since: Date.now() }));
+      } catch (e) {
+        // Our fresh directory was reclaimed from under us (a racing reclaimer): start over.
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw e;
+      }
+      return () => {
+        try {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      };
     }
   }
 
@@ -309,10 +351,10 @@ export class Store {
   }
 
   /** True if the in-flight hold should still block others. */
-  inFlightActive(inFlight: InFlight | null, holdMs: number, now = Date.now()): boolean {
+  inFlightActive(inFlight: InFlight | null, holdMs: number, now = Date.now(), reclaimOnOwnerExit = true): boolean {
     if (!inFlight) return false;
     if (now - inFlight.since >= holdMs) return false;
-    if (inFlight.ownerPid > 1 && !pidAlive(inFlight.ownerPid)) return false;
+    if (reclaimOnOwnerExit && inFlight.ownerPid > 1 && !pidAlive(inFlight.ownerPid)) return false;
     return true;
   }
 
@@ -356,11 +398,6 @@ export class Store {
       /* ignore */
     }
     return claim && Array.isArray(claim.buckets) ? claim : undefined;
-  }
-
-  /** Buckets whose in-flight record names this tool use (fallback when no claim file). */
-  bucketsInFlightFor(toolUseId: string): string[] {
-    return this.listBuckets().filter((k) => this.readLast(k).inFlight?.toolUseId === toolUseId);
   }
 
   /* ----- tabs ----- */

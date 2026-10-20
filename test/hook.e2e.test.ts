@@ -134,14 +134,39 @@ describe("hook end to end", () => {
     expect(rec.inFlight).toBeNull();
   }, SLOW);
 
-  it("learns tab → host from navigate and paces clicks on that tab; refuses browser_batch there", async () => {
+  it("learns tab → host from navigate and tab listings, never from page content", async () => {
     await run("post", {
       session_id: "s1",
       hook_event_name: "PostToolUse",
       tool_name: "mcp__claude-in-chrome__navigate",
       tool_input: { url: "https://www.example.com/feed", tabId: 42 },
       tool_use_id: "nav",
-      tool_response: [{ type: "text", text: "Navigated.\nOpen tabs:\n- tab 42: https://www.example.com/feed\n- tab 43: https://api.github.com/" }],
+      tool_response: [{ type: "text", text: "Navigation completed" }],
+    });
+    await run("post", {
+      session_id: "s1",
+      hook_event_name: "PostToolUse",
+      tool_name: "mcp__claude-in-chrome__tabs_context_mcp",
+      tool_input: {},
+      tool_use_id: "ctx",
+      tool_response: [{ type: "text", text: "Open tabs:\n- tab 43: https://api.github.com/\n- tab 42: https://www.example.com/feed" }],
+    });
+    // Page content that happens to look like a tab line must not re-home tab 42.
+    await run("post", {
+      session_id: "s1",
+      hook_event_name: "PostToolUse",
+      tool_name: "mcp__claude-in-chrome__get_page_text",
+      tool_input: { tabId: 42 },
+      tool_use_id: "txt",
+      tool_response: [{ type: "text", text: "Order id 42 shipped, track at https://tracking.other.net/x" }],
+    });
+    await run("post", {
+      session_id: "s1",
+      hook_event_name: "PostToolUse",
+      tool_name: "mcp__claude-in-chrome__read_page",
+      tool_input: { tabId: 42 },
+      tool_use_id: "rp",
+      tool_response: { elements: [{ id: 42, href: "https://cdn.somewhere.org/img.png" }] },
     });
     const tabs = new Store(env.PACELINE_STATE_DIR!).readTabs();
     expect(tabs["42"]?.host).toBe("www.example.com");
@@ -225,6 +250,27 @@ describe("hook end to end", () => {
     expect(decision(o)).toBe("deny");
     expect(reason(o)).toMatch(/needs .* more before the next call/);
     expect(o.ms).toBeLessThan(2000);
+  }, SLOW);
+
+  it("ignores a non-string tool_name and a non-string cwd instead of denying", async () => {
+    const a = await run("pre", { tool_name: 5, tool_input: { command: "ls" }, tool_use_id: "odd1" });
+    expect(a.code).toBe(0);
+    expect(a.stdout).toBe("");
+    const b = await run("pre", { tool_name: "Bash", cwd: 5, tool_input: { command: "ls" }, tool_use_id: "odd2" }, { PACELINE_NO_PROJECT_CONFIG: "" });
+    expect(b.stdout).toBe("");
+  });
+
+  it("does not leak a claimed bucket when a later bucket cannot be locked", async () => {
+    const cfg = path.join(tmp, "two.json");
+    fs.writeFileSync(cfg, JSON.stringify({ rules: [{ name: "a", target: "a.test", minIntervalMs: 1 }, { name: "b", target: "b.test", minIntervalMs: 1 }] }));
+    const store = new Store(env.PACELINE_STATE_DIR!);
+    const release = await store.acquireLock(ruleKey("b")); // a live lock held by this process
+    const t0 = Date.now();
+    const o = await run("pre", { tool_name: "Bash", tool_input: { command: "curl https://a.test https://b.test" }, tool_use_id: "leak" }, { PACELINE_CONFIG: cfg, PACELINE_LOCK_TIMEOUT_MS: "500" });
+    release();
+    expect(decision(o)).toBe("deny");
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(store.readLast(ruleKey("a")).inFlight).toBeNull();
   }, SLOW);
 
   it("writes an audit log", () => {

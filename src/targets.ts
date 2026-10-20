@@ -43,7 +43,7 @@ export function hostFromUrl(s: unknown): string | null {
 const URL_RE = /\bhttps?:\/\/[^\s'"`<>|)\]},;]+/gi;
 const GIT_SSH_RE = /\b[\w.-]+@([a-z0-9][a-z0-9.-]*\.[a-z]{2,}):/gi;
 const HOST_TOKEN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?(?:\/|$)/i;
-const GH_RE = /(?:^|[;&|(]|\$\(|`)\s*(?:[A-Z_][A-Z0-9_]*=\S*\s+)*gh\s/m;
+const GH_RE = /(?:^|[;&|(]|\$\(|`|\b(?:then|do|else|sudo|env|command|time|exec|nohup|nice|xargs|timeout(?:\s+\S+)?))\s*(?:[A-Z_][A-Z0-9_]*=\S*\s+)*gh\s/m;
 
 /** Every external host a shell command talks to, best effort. */
 export function hostsFromCommand(command: unknown): string[] {
@@ -216,7 +216,7 @@ export function unpaceableReason(toolName: string, toolInput: unknown): string |
 
 /* ---------- tab maps from results ---------- */
 
-const TAB_LINE_RE = /(?:tab(?:[ _-]?id)?|id)\W{0,4}(\d{1,12})\b[^\n]{0,400}?(https?:\/\/[^\s'"<>)\]]+)/gi;
+const TAB_LINE_RE = /\b(?:tab(?:[ _-]?id)?|id)\W{0,4}(\d{1,12})\b[^\n]{0,400}?(https?:\/\/[^\s'"<>)\]]+)/gi;
 const TAB_LINE_RE_REVERSED = /(https?:\/\/[^\s'"<>)\]]+)[^\n]{0,400}?\btab(?:[ _-]?id)?\W{0,4}(\d{1,12})\b/gi;
 
 /** Extract `tabId → host` pairs from a tool result of any shape. */

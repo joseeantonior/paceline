@@ -53,6 +53,7 @@ var DEFAULT_CONFIG = {
   maxWaitMs: 24e4,
   notifyAfterMs: 1e3,
   refuseUnpaceable: true,
+  reclaimOnOwnerExit: true,
   readOnlyTools: [...DEFAULT_READ_ONLY_TOOLS],
   rules: [],
   refuse: []
@@ -130,6 +131,7 @@ function validatePartial(raw, file) {
     "maxWaitMs",
     "notifyAfterMs",
     "refuseUnpaceable",
+    "reclaimOnOwnerExit",
     "readOnlyTools",
     "rules",
     "refuse"
@@ -152,6 +154,10 @@ function validatePartial(raw, file) {
   if (raw.refuseUnpaceable !== void 0) {
     if (typeof raw.refuseUnpaceable !== "boolean") throw new ConfigError(file, "refuseUnpaceable must be a boolean");
     out.refuseUnpaceable = raw.refuseUnpaceable;
+  }
+  if (raw.reclaimOnOwnerExit !== void 0) {
+    if (typeof raw.reclaimOnOwnerExit !== "boolean") throw new ConfigError(file, "reclaimOnOwnerExit must be a boolean");
+    out.reclaimOnOwnerExit = raw.reclaimOnOwnerExit;
   }
   if (raw.readOnlyTools !== void 0) out.readOnlyTools = stringArray(raw.readOnlyTools, "readOnlyTools", file);
   if (raw.rules !== void 0) {
@@ -181,6 +187,7 @@ function mergeConfigs(layers) {
     }
     if (layer.unknownTargetPolicy !== void 0) cfg.unknownTargetPolicy = layer.unknownTargetPolicy;
     if (layer.refuseUnpaceable !== void 0) cfg.refuseUnpaceable = layer.refuseUnpaceable;
+    if (layer.reclaimOnOwnerExit !== void 0) cfg.reclaimOnOwnerExit = layer.reclaimOnOwnerExit;
     for (const t of layer.readOnlyTools ?? []) readOnly.add(t);
     for (const r of layer.rules ?? []) rules.set(r.name, r);
     for (const r of layer.refuse ?? []) refuse.set(r.tool, r);
@@ -268,13 +275,15 @@ function logLine(dir, message) {
 }
 
 // src/state.ts
+var import_node_crypto = __toESM(require("node:crypto"));
 var import_node_fs3 = __toESM(require("node:fs"));
 var import_node_path2 = __toESM(require("node:path"));
 function computeWaitMs({ lastFinishedAt, nowMs, minIntervalMs }) {
   if (lastFinishedAt === null || lastFinishedAt === void 0) return 0;
   if (!Number.isFinite(lastFinishedAt) || !Number.isFinite(nowMs) || !Number.isFinite(minIntervalMs)) return 0;
   if (minIntervalMs <= 0) return 0;
-  return Math.max(0, Math.floor(lastFinishedAt + minIntervalMs - nowMs));
+  const last = Math.min(lastFinishedAt, nowMs);
+  return Math.max(0, Math.floor(last + minIntervalMs - nowMs));
 }
 var HOUR_MS = 36e5;
 function computeCapWaitMs(recent, maxPerHour, nowMs) {
@@ -316,21 +325,28 @@ function ruleKey(ruleName) {
 function hostKey(host, ruleName) {
   return ruleName ? `r_${sanitizeKey(ruleName)}__${sanitizeKey(host)}` : `h_${sanitizeKey(host)}`;
 }
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 function writeAtomic(file, data) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
   import_node_fs3.default.writeFileSync(tmp, JSON.stringify(data));
-  try {
-    import_node_fs3.default.renameSync(tmp, file);
-  } catch (e) {
+  for (let attempt = 0; ; attempt++) {
     try {
-      import_node_fs3.default.writeFileSync(file, JSON.stringify(data));
-    } finally {
+      import_node_fs3.default.renameSync(tmp, file);
+      return;
+    } catch (e) {
+      const code = e.code;
+      if ((code === "EPERM" || code === "EBUSY" || code === "EACCES") && attempt < 20) {
+        sleepSync(5);
+        continue;
+      }
       try {
         import_node_fs3.default.unlinkSync(tmp);
       } catch {
       }
+      throw e;
     }
-    if (e.code !== "EPERM" && e.code !== "EEXIST") throw e;
   }
 }
 function readJson(file) {
@@ -367,8 +383,9 @@ var Store = class {
     return import_node_path2.default.join(this.dir, "claims");
   }
   claimFile(toolUseId) {
-    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 150);
-    return import_node_path2.default.join(this.claimsDir, `${safe}.json`);
+    const safe = toolUseId.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 100);
+    const hash = import_node_crypto.default.createHash("sha1").update(toolUseId).digest("hex").slice(0, 10);
+    return import_node_path2.default.join(this.claimsDir, `${safe}-${hash}.json`);
   }
   /** Delete claim files whose call never reported back (older than `maxAgeMs`). */
   pruneClaims(maxAgeMs = 24 * HOUR_MS, now = Date.now()) {
@@ -402,28 +419,48 @@ var Store = class {
     }
   }
   /* ----- lock ----- */
-  /** Returns true if the lock was removed (dead owner or too old). */
-  reclaimIfStale(lockDir) {
-    const owner = readJson(import_node_path2.default.join(lockDir, "owner.json"));
-    let stale = false;
+  readOwner(lockDir) {
+    return readJson(import_node_path2.default.join(lockDir, "owner.json"));
+  }
+  isStale(lockDir, owner) {
     if (owner === void 0) {
       try {
-        const st = import_node_fs3.default.statSync(lockDir);
-        stale = Date.now() - st.mtimeMs > 2e3;
+        return Date.now() - import_node_fs3.default.statSync(lockDir).mtimeMs > 2e3;
       } catch {
         return true;
       }
-    } else {
-      const age = Date.now() - (owner.since ?? 0);
-      stale = age > this.staleLockMs || typeof owner.pid === "number" && !pidAlive(owner.pid);
     }
-    if (!stale) return false;
+    const age = Date.now() - (owner.since ?? 0);
+    return age > this.staleLockMs || typeof owner.pid === "number" && !pidAlive(owner.pid);
+  }
+  /**
+   * Remove a stale lock so the caller can retry mkdir. Reclaim is done by
+   * renaming the lock directory to a unique name: rename is atomic, so of
+   * several contenders exactly one wins, and the winner then checks that what
+   * it grabbed is still the stale lock it saw (not a fresh one taken in
+   * between) before deleting it. Returns true if the caller should retry now.
+   */
+  reclaimIfStale(lockDir) {
+    const seen = this.readOwner(lockDir);
+    if (!this.isStale(lockDir, seen)) return false;
+    const grave = `${lockDir}.reclaim.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
     try {
-      import_node_fs3.default.rmSync(lockDir, { recursive: true, force: true });
-      return true;
+      import_node_fs3.default.renameSync(lockDir, grave);
     } catch {
-      return false;
+      return true;
     }
+    const got = this.readOwner(grave);
+    const same = got?.pid === seen?.pid && got?.since === seen?.since;
+    if (!same && !this.isStale(grave, got)) {
+      try {
+        import_node_fs3.default.renameSync(grave, lockDir);
+      } catch {
+        import_node_fs3.default.rmSync(grave, { recursive: true, force: true });
+      }
+      return true;
+    }
+    import_node_fs3.default.rmSync(grave, { recursive: true, force: true });
+    return true;
   }
   async acquireLock(key) {
     const lockDir = this.lockDir(key);
@@ -433,20 +470,26 @@ var Store = class {
     for (; ; ) {
       try {
         import_node_fs3.default.mkdirSync(lockDir);
-        import_node_fs3.default.writeFileSync(import_node_path2.default.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, since: Date.now() }));
-        return () => {
-          try {
-            import_node_fs3.default.rmSync(lockDir, { recursive: true, force: true });
-          } catch {
-          }
-        };
       } catch (e) {
         if (e.code !== "EEXIST") throw e;
         if (this.reclaimIfStale(lockDir)) continue;
         if (Date.now() > deadline) throw new LockTimeout(lockDir);
         await sleep(backoff + Math.floor(Math.random() * 10));
         backoff = Math.min(backoff * 2, 100);
+        continue;
       }
+      try {
+        import_node_fs3.default.writeFileSync(import_node_path2.default.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, since: Date.now() }));
+      } catch (e) {
+        if (e.code === "ENOENT") continue;
+        throw e;
+      }
+      return () => {
+        try {
+          import_node_fs3.default.rmSync(lockDir, { recursive: true, force: true });
+        } catch {
+        }
+      };
     }
   }
   async withLock(key, fn) {
@@ -478,10 +521,10 @@ var Store = class {
     import_node_fs3.default.rmSync(this.bucketDir(key), { recursive: true, force: true });
   }
   /** True if the in-flight hold should still block others. */
-  inFlightActive(inFlight, holdMs, now = Date.now()) {
+  inFlightActive(inFlight, holdMs, now = Date.now(), reclaimOnOwnerExit = true) {
     if (!inFlight) return false;
     if (now - inFlight.since >= holdMs) return false;
-    if (inFlight.ownerPid > 1 && !pidAlive(inFlight.ownerPid)) return false;
+    if (reclaimOnOwnerExit && inFlight.ownerPid > 1 && !pidAlive(inFlight.ownerPid)) return false;
     return true;
   }
   /** Mark a bucket finished: finish-time stamp, clear the matching in-flight hold. */
@@ -519,10 +562,6 @@ var Store = class {
     } catch {
     }
     return claim && Array.isArray(claim.buckets) ? claim : void 0;
-  }
-  /** Buckets whose in-flight record names this tool use (fallback when no claim file). */
-  bucketsInFlightFor(toolUseId) {
-    return this.listBuckets().filter((k) => this.readLast(k).inFlight?.toolUseId === toolUseId);
   }
   /* ----- tabs ----- */
   readTabs() {
@@ -574,7 +613,7 @@ function hostFromUrl(s) {
 var URL_RE = /\bhttps?:\/\/[^\s'"`<>|)\]},;]+/gi;
 var GIT_SSH_RE = /\b[\w.-]+@([a-z0-9][a-z0-9.-]*\.[a-z]{2,}):/gi;
 var HOST_TOKEN_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?(?:\/|$)/i;
-var GH_RE = /(?:^|[;&|(]|\$\(|`)\s*(?:[A-Z_][A-Z0-9_]*=\S*\s+)*gh\s/m;
+var GH_RE = /(?:^|[;&|(]|\$\(|`|\b(?:then|do|else|sudo|env|command|time|exec|nohup|nice|xargs|timeout(?:\s+\S+)?))\s*(?:[A-Z_][A-Z0-9_]*=\S*\s+)*gh\s/m;
 function hostsFromCommand(command) {
   if (typeof command !== "string" || !command) return [];
   const hosts = /* @__PURE__ */ new Set();
@@ -706,7 +745,7 @@ function unpaceableReason(toolName, toolInput) {
   }
   return void 0;
 }
-var TAB_LINE_RE = /(?:tab(?:[ _-]?id)?|id)\W{0,4}(\d{1,12})\b[^\n]{0,400}?(https?:\/\/[^\s'"<>)\]]+)/gi;
+var TAB_LINE_RE = /\b(?:tab(?:[ _-]?id)?|id)\W{0,4}(\d{1,12})\b[^\n]{0,400}?(https?:\/\/[^\s'"<>)\]]+)/gi;
 var TAB_LINE_RE_REVERSED = /(https?:\/\/[^\s'"<>)\]]+)[^\n]{0,400}?\btab(?:[ _-]?id)?\W{0,4}(\d{1,12})\b/gi;
 function tabsFromResponse(response) {
   const out = {};
@@ -781,13 +820,23 @@ function bucketsFor(config, hosts) {
   }
   return [...out.values()].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
-function allRuleBuckets(config) {
-  return config.rules.map((rule) => ({
-    key: ruleKey(rule.name),
-    label: ruleLabel(rule),
-    minIntervalMs: rule.minIntervalMs,
-    maxPerHour: rule.maxPerHour
-  })).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+function allRuleBuckets(config, store) {
+  const out = /* @__PURE__ */ new Map();
+  const existing = store ? store.listBuckets() : [];
+  for (const rule of config.rules) {
+    const base = { key: ruleKey(rule.name), label: ruleLabel(rule), minIntervalMs: rule.minIntervalMs, maxPerHour: rule.maxPerHour };
+    if (rule.perHost) {
+      const prefix = `${ruleKey(rule.name)}__`;
+      for (const key of existing) {
+        if (key.startsWith(prefix)) {
+          const rec = store.readLast(key, key);
+          out.set(key, { ...base, key, label: rec.label !== key ? rec.label : `${rule.name} (${key.slice(prefix.length)})` });
+        }
+      }
+    }
+    out.set(base.key, base);
+  }
+  return [...out.values()].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
 function fmtSeconds(ms) {
   return `${(ms / 1e3).toFixed(ms >= 1e4 ? 0 : 1)}s`;
@@ -797,69 +846,74 @@ async function pace(store, buckets, claim, opts) {
   const start = now();
   const waits = {};
   const claimed = [];
-  const abandonAll = () => {
-    for (const key of claimed) store.abandon(key, claim.toolUseId);
-  };
-  for (const bucket of buckets) {
-    const bucketStart = now();
-    for (; ; ) {
-      const t = now();
-      if (t > opts.deadlineMs) {
-        abandonAll();
-        return {
-          waitedMs: t - start,
-          waits,
-          denied: `paceline: gave up after ${fmtSeconds(t - start)} waiting for ${bucket.label} (another call is still in flight). Try again in a moment.`
-        };
+  const abandonAll = async () => {
+    for (const key of claimed) {
+      try {
+        await store.withLock(key, () => store.abandon(key, claim.toolUseId));
+      } catch {
       }
-      const step = await store.withLock(bucket.key, () => {
-        const rec = store.readLast(bucket.key, bucket.label);
-        const t2 = now();
-        if (store.inFlightActive(rec.inFlight, opts.inFlightHoldMs, t2)) {
-          const remainingHold = Math.max(0, rec.inFlight.since + opts.inFlightHoldMs - t2);
-          return { claimed: false, sleepMs: Math.min(200, remainingHold + 1), projectedMs: remainingHold + bucket.minIntervalMs, why: "in-flight" };
-        }
-        const intervalWait = computeWaitMs({ lastFinishedAt: rec.lastFinishedAt, nowMs: t2, minIntervalMs: bucket.minIntervalMs });
-        const capWait = computeCapWaitMs(rec.recent, bucket.maxPerHour, t2);
-        const wait = Math.max(intervalWait, capWait);
-        if (wait > 0) {
-          return { claimed: false, sleepMs: Math.min(wait, 2e3), projectedMs: wait, why: capWait > intervalWait ? "hourly-cap" : "interval" };
-        }
-        rec.label = bucket.label;
-        rec.recentStarts = [...(rec.recentStarts ?? []).filter((t3) => t3 > t2 - 24 * 36e5), t2];
-        rec.inFlight = {
-          since: t2,
-          pid: process.pid,
-          ownerPid: claim.ownerPid ?? process.ppid,
-          sessionId: claim.sessionId,
-          toolUseId: claim.toolUseId,
-          toolName: claim.toolName,
-          agentId: claim.agentId
-        };
-        store.writeLast(bucket.key, rec);
-        return { claimed: true };
-      });
-      if (step.claimed) break;
-      if (step.why === "hourly-cap" && now() + step.projectedMs > opts.deadlineMs) {
-        abandonAll();
-        return {
-          waitedMs: now() - start,
-          waits,
-          denied: `paceline: hourly cap reached for ${bucket.label} (${bucket.maxPerHour}/hour). Next slot opens in ${fmtSeconds(step.projectedMs)}. Do something else and come back.`
-        };
-      }
-      if (step.why === "interval" && now() + step.projectedMs > opts.deadlineMs) {
-        abandonAll();
-        return {
-          waitedMs: now() - start,
-          waits,
-          denied: `paceline: ${bucket.label} needs ${fmtSeconds(step.projectedMs)} more before the next call, longer than this hook may wait. Retry later.`
-        };
-      }
-      await sleep(step.sleepMs);
     }
-    claimed.push(bucket.key);
-    waits[bucket.label] = now() - bucketStart;
+  };
+  const giveUp = async (denied) => {
+    await abandonAll();
+    return { waitedMs: now() - start, waits, denied };
+  };
+  try {
+    for (const bucket of buckets) {
+      const bucketStart = now();
+      for (; ; ) {
+        const t = now();
+        if (t > opts.deadlineMs) {
+          return giveUp(
+            `paceline: gave up after ${fmtSeconds(t - start)} waiting for ${bucket.label} (another call is still in flight). Try again in a moment.`
+          );
+        }
+        const step = await store.withLock(bucket.key, () => {
+          const rec = store.readLast(bucket.key, bucket.label);
+          const t2 = now();
+          if (store.inFlightActive(rec.inFlight, opts.inFlightHoldMs, t2, opts.reclaimOnOwnerExit ?? true)) {
+            const remainingHold = Math.max(0, rec.inFlight.since + opts.inFlightHoldMs - t2);
+            return { claimed: false, sleepMs: Math.min(200, remainingHold + 1), projectedMs: remainingHold + bucket.minIntervalMs, why: "in-flight" };
+          }
+          const intervalWait = computeWaitMs({ lastFinishedAt: rec.lastFinishedAt, nowMs: t2, minIntervalMs: bucket.minIntervalMs });
+          const capWait = computeCapWaitMs(rec.recent, bucket.maxPerHour, t2);
+          const wait = Math.max(intervalWait, capWait);
+          if (wait > 0) {
+            return { claimed: false, sleepMs: Math.min(wait, 2e3), projectedMs: wait, why: capWait > intervalWait ? "hourly-cap" : "interval" };
+          }
+          rec.label = bucket.label;
+          rec.recentStarts = [...(rec.recentStarts ?? []).filter((t3) => t3 > t2 - 24 * 36e5), t2];
+          rec.inFlight = {
+            since: t2,
+            pid: process.pid,
+            ownerPid: claim.ownerPid ?? process.ppid,
+            sessionId: claim.sessionId,
+            toolUseId: claim.toolUseId,
+            toolName: claim.toolName,
+            agentId: claim.agentId
+          };
+          store.writeLast(bucket.key, rec);
+          return { claimed: true };
+        });
+        if (step.claimed) break;
+        if (step.why === "hourly-cap" && now() + step.projectedMs > opts.deadlineMs) {
+          return giveUp(
+            `paceline: hourly cap reached for ${bucket.label} (${bucket.maxPerHour}/hour). Next slot opens in ${fmtSeconds(step.projectedMs)}. Do something else and come back.`
+          );
+        }
+        if (step.why === "interval" && now() + step.projectedMs > opts.deadlineMs) {
+          return giveUp(
+            `paceline: ${bucket.label} needs ${fmtSeconds(step.projectedMs)} more before the next call, longer than this hook may wait. Retry later.`
+          );
+        }
+        await sleep(step.sleepMs);
+      }
+      claimed.push(bucket.key);
+      waits[bucket.label] = now() - bucketStart;
+    }
+  } catch (e) {
+    await abandonAll();
+    throw e;
   }
   const record = {
     toolUseId: claim.toolUseId,
@@ -869,13 +923,15 @@ async function pace(store, buckets, claim, opts) {
     buckets: claimed,
     since: start
   };
-  if (claimed.length > 0) store.writeClaim(record);
+  if (claimed.length > 0) {
+    store.writeClaim(record);
+    store.pruneClaims(void 0, now());
+  }
   return { waitedMs: now() - start, waits };
 }
 async function release(store, toolUseId, now = Date.now()) {
   const claim = store.takeClaim(toolUseId);
-  const keys = claim?.buckets ?? store.bucketsInFlightFor(toolUseId);
-  if (!claim) store.pruneClaims(void 0, now);
+  const keys = claim?.buckets ?? [];
   for (const key of keys) {
     await store.withLock(key, () => store.finish(key, toolUseId, now));
   }
@@ -902,11 +958,13 @@ function projectConfigPath(projectDir2) {
   return import_node_path3.default.join(projectDir2, ".claude", "paceline.json");
 }
 function projectDir(hookCwd, env = process.env) {
-  if (env.PACELINE_NO_PROJECT_CONFIG) return void 0;
-  return env.CLAUDE_PROJECT_DIR ?? hookCwd;
+  if (env.PACELINE_NO_PROJECT_CONFIG && env.PACELINE_NO_PROJECT_CONFIG !== "0") return void 0;
+  if (env.CLAUDE_PROJECT_DIR) return env.CLAUDE_PROJECT_DIR;
+  return typeof hookCwd === "string" && hookCwd ? hookCwd : void 0;
 }
 
 // src/hook.ts
+var TAB_LISTING_TOOLS = /* @__PURE__ */ new Set([`${CHROME_PREFIX}tabs_context_mcp`, `${CHROME_PREFIX}list_tabs`, `${CHROME_PREFIX}tabs_create_mcp`]);
 function readStdin() {
   return new Promise((resolve) => {
     const chunks = [];
@@ -932,34 +990,38 @@ function deny(reason, extra = {}) {
 function fmtWait(ms) {
   return ms >= 1e4 ? `${Math.round(ms / 1e3)}s` : `${(ms / 1e3).toFixed(1)}s`;
 }
+function lockTimeoutMs() {
+  const v = Number(process.env.PACELINE_LOCK_TIMEOUT_MS);
+  return Number.isFinite(v) && v > 0 ? v : 3e4;
+}
 function toolUseIdFor(input) {
   if (typeof input.tool_use_id === "string" && input.tool_use_id) return input.tool_use_id;
-  return `${input.session_id ?? "nosession"}:${input.tool_name ?? "notool"}`;
+  return `${typeof input.session_id === "string" ? input.session_id : "nosession"}:${typeof input.tool_name === "string" ? input.tool_name : "notool"}`;
 }
 function short(s, n = 60) {
   if (!s) return "";
   return s.length > n ? `${s.slice(0, n - 1)}\u2026` : s;
 }
-async function handlePre(input, store, state) {
-  const toolName = input.tool_name;
+async function handlePre(input, state) {
+  const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
   if (!toolName) return;
+  const cwd = typeof input.cwd === "string" ? input.cwd : void 0;
   let config;
   let configError;
   try {
-    config = loadConfig([userConfigPath(), (() => {
-      const p = projectDir(input.cwd);
-      return p ? projectConfigPath(p) : void 0;
-    })()]).config;
+    const proj = projectDir(cwd);
+    config = loadConfig([userConfigPath(), proj ? projectConfigPath(proj) : void 0]).config;
   } catch (e) {
     if (!(e instanceof ConfigError)) throw e;
     configError = e;
     config = DEFAULT_CONFIG;
   }
+  const store = new Store(state, { lockTimeoutMs: lockTimeoutMs(), staleLockMs: config.staleLockMs });
   const tabs = toolName.startsWith(CHROME_PREFIX) ? store.readTabs() : {};
   const resolved = resolveTargets(input, tabs, config.readOnlyTools);
   if (resolved.readOnly) return;
   if (configError) {
-    if (resolved.hosts.length > 0 || resolved.unknownTab !== void 0) {
+    if (resolved.hosts.some((h) => !isLoopback(h)) || resolved.unknownTab !== void 0) {
       logLine(state, `pre DENY ${toolName} config error: ${configError.message}`);
       deny(`paceline: your config is invalid, so external calls are blocked until it is fixed. ${configError.message}`);
     }
@@ -978,7 +1040,7 @@ async function handlePre(input, store, state) {
       logLine(state, `pre PASS ${toolName} unknown tab ${resolved.unknownTab} (policy ${config.unknownTargetPolicy})`);
       return;
     }
-    buckets = allRuleBuckets(config);
+    buckets = allRuleBuckets(config, store);
     notes.push(
       `paceline: tab ${resolved.unknownTab} has no known site yet, so this call was paced against all ${buckets.length} rule(s) (unknownTargetPolicy: pace-all). Navigate in the tab first, or set "unknownTargetPolicy": "ignore".`
     );
@@ -1005,7 +1067,7 @@ async function handlePre(input, store, state) {
       agentId: input.agent_id,
       ownerPid: process.ppid
     },
-    { deadlineMs: Date.now() + config.maxWaitMs, inFlightHoldMs: config.inFlightHoldMs }
+    { deadlineMs: Date.now() + config.maxWaitMs, inFlightHoldMs: config.inFlightHoldMs, reclaimOnOwnerExit: config.reclaimOnOwnerExit }
   );
   const labels = buckets.map((b) => b.label).join(", ");
   if (result.denied) {
@@ -1025,24 +1087,23 @@ async function handlePre(input, store, state) {
     });
   }
 }
-async function handlePost(input, store, state) {
-  const toolName = input.tool_name ?? "";
+async function handlePost(input, state) {
+  const toolName = typeof input.tool_name === "string" ? input.tool_name : "";
   const toolUseId = toolUseIdFor(input);
   const now = Date.now();
+  const store = new Store(state, { lockTimeoutMs: lockTimeoutMs() });
   const released = await release(store, toolUseId, now);
   const event = input.hook_event_name ?? "PostToolUse";
-  if (toolName.startsWith(CHROME_PREFIX)) {
+  if (toolName.startsWith(CHROME_PREFIX) && event === "PostToolUse") {
     const entries = {};
     const tabId = tabIdOf(input.tool_input);
-    if (event === "PostToolUse" && tabId !== void 0 && input.tool_input && typeof input.tool_input === "object") {
+    if (toolName === `${CHROME_PREFIX}navigate` && tabId !== void 0 && input.tool_input && typeof input.tool_input === "object") {
       const url = input.tool_input.url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
     }
-    Object.assign(entries, tabsFromResponse(input.tool_response));
-    if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== void 0 && event === "PostToolUse") {
-      store.forgetTab(tabId);
-    }
+    if (TAB_LISTING_TOOLS.has(toolName)) Object.assign(entries, tabsFromResponse(input.tool_response));
+    if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== void 0) store.forgetTab(tabId);
     if (Object.keys(entries).length > 0) store.updateTabs(entries, now);
   }
   if (released.length > 0 || event !== "PostToolUse") {
@@ -1067,10 +1128,9 @@ async function main() {
   }
   if (!input || typeof input !== "object") return;
   const state = stateDir();
-  const store = new Store(state, { lockTimeoutMs: 3e4 });
   try {
-    if (mode === "pre") await handlePre(input, store, state);
-    else await handlePost(input, store, state);
+    if (mode === "pre") await handlePre(input, state);
+    else await handlePost(input, state);
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
     logLine(state, `${mode} ERROR ${input.tool_name ?? ""}: ${msg}`);
@@ -1080,7 +1140,10 @@ async function main() {
   }
 }
 void main().then(
-  () => process.exit(0),
+  () => {
+    process.exitCode = 0;
+    setTimeout(() => process.exit(0), 2e3).unref();
+  },
   (e) => {
     process.stderr.write(`paceline: ${e instanceof Error ? e.stack ?? e.message : String(e)}
 `);
