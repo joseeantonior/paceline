@@ -281,22 +281,15 @@ claude plugin validate --strict .
 claude --plugin-dir . # try it live from another project directory
 ```
 
-Two GitHub Actions workflows live in `ci/` and need a one-time move into `.github/workflows/`
-(they were committed outside that path because the token that pushed this repository had no
-`workflow` scope):
-
-```bash
-mkdir -p .github/workflows
-git mv ci/github-actions.yml .github/workflows/ci.yml
-git mv ci/release.yml .github/workflows/release.yml
-git commit -m "Enable CI and release workflows" && git push
-```
+Two GitHub Actions workflows run in `.github/workflows/`:
 
 - `ci.yml` runs the type check, unit and end-to-end tests, `dist/` freshness, the concurrency
   proof on Linux, macOS and Windows, and `claude plugin validate --strict` on every push.
-- `release.yml` publishes to npm with provenance when a `v*` tag is pushed. Save an npm automation
-  token as the `NPM_TOKEN` repository secret first. To release: bump `version` in `package.json`
-  and `.claude-plugin/plugin.json`, commit, then `git tag v0.1.0 && git push --tags`.
+- `release.yml` publishes to npm when a `v*` tag is pushed, through npm trusted publishing (the
+  workflow's GitHub identity is the credential; no token is stored). To release: bump `version` in
+  `package.json` and `.claude-plugin/plugin.json`, note the changes in `CHANGELOG.md`, commit,
+  then `git tag v0.1.1 && git push --tags`. Marketplace installs pick up the new `version`; npm
+  installs pick up the new package.
 
 The hook is one bundled file (`dist/hook.js`, no runtime dependencies) so a non-matching call
 costs about 45 ms. `computeWaitMs` and the lock reclaim logic are pure functions with their own
