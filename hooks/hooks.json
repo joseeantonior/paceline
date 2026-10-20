@@ -1,0 +1,59 @@
+{
+  "description": "paceline: minimum interval between calls to the same external host, machine-wide across sessions, subagents and scripts",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook.js", "pre"],
+            "timeout": 300,
+            "onFailure": "block",
+            "statusMessage": "paceline: pacing external call"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook.js", "post"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook.js", "post"],
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "^(mcp__claude-in-chrome__.*|WebFetch|Bash|mcp__.*__(fetch|navigate|request|post|send|publish|create|update|delete|follow|like|submit|upload).*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hook.js", "post"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

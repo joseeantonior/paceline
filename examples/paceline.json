@@ -1,0 +1,13 @@
+{
+  "defaultMinIntervalMs": 0,
+  "unknownTargetPolicy": "pace-all",
+  "inFlightHoldMs": 120000,
+  "rules": [
+    { "name": "social",     "target": "*.example.com",   "minIntervalMs": 10000, "maxPerHour": 150 },
+    { "name": "github-api", "target": "api.github.com",  "minIntervalMs": 1000 },
+    { "name": "shops",      "target": "*.myshopify.com", "minIntervalMs": 2000, "perHost": true }
+  ],
+  "refuse": [
+    { "tool": "mcp__claude-in-chrome__browser_batch", "reason": "paceline: no gap is possible inside a batch. One action per call." }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "name": "paceline",
+  "version": "0.1.0",
+  "description": "Your agents take turns. A Claude Code plugin that enforces a minimum gap between calls to the same external host, machine-wide, across every session, subagent and script.",
+  "license": "MIT",
+  "author": "Jose Antonio Rodriguez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joseeantonior/paceline.git"
+  },
+  "homepage": "https://github.com/joseeantonior/paceline#readme",
+  "bugs": "https://github.com/joseeantonior/paceline/issues",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "hooks",
+    "rate-limit",
+    "throttle",
+    "pacing",
+    "agents",
+    "mcp"
+  ],
+  "bin": {
+    "paceline": "dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "hooks/",
+    ".claude-plugin/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run build && npm test",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

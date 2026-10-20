@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "paceline",
+  "description": "paceline — a minimum interval between calls to the same external host, machine-wide, for Claude Code.",
+  "owner": {
+    "name": "Jose Antonio Rodriguez",
+    "url": "https://github.com/joseeantonior"
+  },
+  "plugins": [
+    {
+      "name": "paceline",
+      "source": "./",
+      "description": "Your agents take turns. Enforces a minimum gap between calls to the same external host across every Claude Code session, subagent and script on the machine.",
+      "category": "productivity",
+      "tags": ["hooks", "rate-limit", "throttle", "pacing", "browser"]
+    }
+  ]
+}
