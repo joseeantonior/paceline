@@ -174,8 +174,18 @@ async function handlePost(input: HookInput, state: string): Promise<void> {
       const url = (input.tool_input as Record<string, unknown>).url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
+      // "back" / "forward": the tab is now on a page we cannot name; forget it so the next action
+      // is treated as an unknown tab (pace-all) rather than attributed to the old site.
+      else if (typeof url === "string" && /^(back|forward)$/i.test(url.trim())) store.forgetTab(tabId);
     }
-    if (TAB_LISTING_TOOLS.has(toolName)) Object.assign(entries, tabsFromResponse(input.tool_response));
+    if (TAB_LISTING_TOOLS.has(toolName)) {
+      Object.assign(entries, tabsFromResponse(input.tool_response));
+      // The extension's listing format is not documented; PACELINE_DEBUG_TABS=1 records what it
+      // returned so a mismatch can be diagnosed from the log (`paceline log`).
+      if (process.env.PACELINE_DEBUG_TABS && process.env.PACELINE_DEBUG_TABS !== "0") {
+        logLine(state, `tabs ${toolName} parsed ${JSON.stringify(entries)} from ${JSON.stringify(input.tool_response).slice(0, 4000)}`);
+      }
+    }
     if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== undefined) store.forgetTab(tabId);
     if (Object.keys(entries).length > 0) store.updateTabs(entries, now);
   }

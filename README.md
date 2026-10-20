@@ -249,8 +249,12 @@ call, which closes the one hole the Rulestack post listed.
   (another hook denied it, the turn was interrupted, or a single call runs longer than
   `inFlightHoldMs`): after it, the next caller proceeds even if the first is still running.
 - **The browser tab → site map is heuristic.** It is learned from `navigate` calls and from URLs
-  the extension returns next to tab ids. When a tab is unknown, `pace-all` over-waits rather than
-  under-waits, and the message tells you so. `paceline status` shows the current map.
+  the extension returns next to tab ids in `tabs_context_mcp` results, whose format is not
+  documented. When a tab is unknown, `pace-all` over-waits rather than under-waits, and the
+  message tells you so. `paceline status` shows the current map; `PACELINE_DEBUG_TABS=1` in the
+  environment Claude Code starts from records each tab listing and what was parsed from it in
+  `paceline log`, so a format mismatch takes one look to diagnose. A `navigate` to `back` or
+  `forward` makes the tab unknown again.
 - **A page's own requests are not paced.** paceline spaces the agent's actions, not the dozen
   XHRs a page fires when it loads.
 - **Bash matching is best-effort.** `curl $URL` with the URL in a variable is invisible, and `gh`

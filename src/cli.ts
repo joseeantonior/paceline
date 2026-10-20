@@ -27,6 +27,7 @@ Environment:
   PACELINE_STATE_DIR   state directory (default $XDG_CACHE_HOME/paceline or ~/.cache/paceline)
   PACELINE_CONFIG      user config file (default ~/.claude/paceline.json)
   PACELINE_DISABLED=1  hooks pass every call through
+  PACELINE_DEBUG_TABS=1 log each browser tab listing and what was parsed from it
 `;
 
 function die(msg: string, code = 1): never {
@@ -247,23 +248,34 @@ async function cmdRun(argv: string[]): Promise<void> {
   if (result.waitedMs >= config.notifyAfterMs) {
     process.stderr.write(`paceline: waited ${(result.waitedMs / 1000).toFixed(1)}s for ${buckets.map((b) => b.label).join(", ")}\n`);
   }
-  const child = spawn(cmd[0]!, cmd.slice(1), { stdio: "inherit" });
   const finish = async (code: number): Promise<never> => {
     await release(store, toolUseId);
     process.exit(code);
   };
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(sig, () => {
-      child.kill(sig);
+  const start = (useShell: boolean): void => {
+    const child = useShell
+      ? spawn(cmd.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(" "), { stdio: "inherit", shell: true })
+      : spawn(cmd[0]!, cmd.slice(1), { stdio: "inherit" });
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      process.on(sig, () => {
+        child.kill(sig);
+      });
+    }
+    child.on("error", (e) => {
+      const code = (e as NodeJS.ErrnoException).code;
+      // On Windows, npm's `.cmd` shims and batch files only run through the shell.
+      if (!useShell && process.platform === "win32" && (code === "EINVAL" || code === "ENOENT")) {
+        start(true);
+        return;
+      }
+      process.stderr.write(`paceline: cannot run ${cmd[0]}: ${e.message}\n`);
+      void finish(127);
     });
-  }
-  child.on("error", (e) => {
-    process.stderr.write(`paceline: cannot run ${cmd[0]}: ${e.message}\n`);
-    void finish(127);
-  });
-  child.on("exit", (code, signal) => {
-    void finish(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1));
-  });
+    child.on("exit", (code, signal) => {
+      void finish(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1));
+    });
+  };
+  start(false);
 }
 
 interface CallResult {

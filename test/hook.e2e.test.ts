@@ -172,6 +172,17 @@ describe("hook end to end", () => {
     expect(tabs["42"]?.host).toBe("www.example.com");
     expect(tabs["43"]?.host).toBe("api.github.com");
 
+    // history navigation lands on a page we cannot name: the tab becomes unknown again
+    await run("post", {
+      session_id: "s1",
+      hook_event_name: "PostToolUse",
+      tool_name: "mcp__claude-in-chrome__navigate",
+      tool_input: { url: "back", tabId: 43 },
+      tool_use_id: "back",
+      tool_response: [{ type: "text", text: "Navigation completed" }],
+    });
+    expect(new Store(env.PACELINE_STATE_DIR!).readTabs()["43"]).toBeUndefined();
+
     const batch = await run("pre", { tool_name: "mcp__claude-in-chrome__browser_batch", tool_input: { tabId: 42, actions: [] }, tool_use_id: "bb" });
     expect(decision(batch)).toBe("deny");
     expect(reason(batch)).toMatch(/browser_batch/);

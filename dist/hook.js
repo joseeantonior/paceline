@@ -1101,8 +1101,14 @@ async function handlePost(input, state) {
       const url = input.tool_input.url;
       const host = hostFromUrl(url);
       if (host) entries[tabId] = { host, url: String(url) };
+      else if (typeof url === "string" && /^(back|forward)$/i.test(url.trim())) store.forgetTab(tabId);
     }
-    if (TAB_LISTING_TOOLS.has(toolName)) Object.assign(entries, tabsFromResponse(input.tool_response));
+    if (TAB_LISTING_TOOLS.has(toolName)) {
+      Object.assign(entries, tabsFromResponse(input.tool_response));
+      if (process.env.PACELINE_DEBUG_TABS && process.env.PACELINE_DEBUG_TABS !== "0") {
+        logLine(state, `tabs ${toolName} parsed ${JSON.stringify(entries)} from ${JSON.stringify(input.tool_response).slice(0, 4e3)}`);
+      }
+    }
     if (toolName === `${CHROME_PREFIX}tabs_close_mcp` && tabId !== void 0) store.forgetTab(tabId);
     if (Object.keys(entries).length > 0) store.updateTabs(entries, now);
   }

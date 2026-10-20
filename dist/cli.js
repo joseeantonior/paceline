@@ -749,6 +749,7 @@ Environment:
   PACELINE_STATE_DIR   state directory (default $XDG_CACHE_HOME/paceline or ~/.cache/paceline)
   PACELINE_CONFIG      user config file (default ~/.claude/paceline.json)
   PACELINE_DISABLED=1  hooks pass every call through
+  PACELINE_DEBUG_TABS=1 log each browser tab listing and what was parsed from it
 `;
 function die(msg, code = 1) {
   process.stderr.write(`paceline: ${msg}
@@ -952,24 +953,32 @@ async function cmdRun(argv) {
     process.stderr.write(`paceline: waited ${(result.waitedMs / 1e3).toFixed(1)}s for ${buckets.map((b) => b.label).join(", ")}
 `);
   }
-  const child = (0, import_node_child_process.spawn)(cmd[0], cmd.slice(1), { stdio: "inherit" });
   const finish = async (code) => {
     await release(store, toolUseId);
     process.exit(code);
   };
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(sig, () => {
-      child.kill(sig);
-    });
-  }
-  child.on("error", (e) => {
-    process.stderr.write(`paceline: cannot run ${cmd[0]}: ${e.message}
+  const start = (useShell) => {
+    const child = useShell ? (0, import_node_child_process.spawn)(cmd.map((a) => /[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a).join(" "), { stdio: "inherit", shell: true }) : (0, import_node_child_process.spawn)(cmd[0], cmd.slice(1), { stdio: "inherit" });
+    for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+      process.on(sig, () => {
+        child.kill(sig);
+      });
+    }
+    child.on("error", (e) => {
+      const code = e.code;
+      if (!useShell && process.platform === "win32" && (code === "EINVAL" || code === "ENOENT")) {
+        start(true);
+        return;
+      }
+      process.stderr.write(`paceline: cannot run ${cmd[0]}: ${e.message}
 `);
-    void finish(127);
-  });
-  child.on("exit", (code, signal) => {
-    void finish(code ?? (signal ? 128 + (import_node_os2.default.constants.signals[signal] ?? 0) : 1));
-  });
+      void finish(127);
+    });
+    child.on("exit", (code, signal) => {
+      void finish(code ?? (signal ? 128 + (import_node_os2.default.constants.signals[signal] ?? 0) : 1));
+    });
+  };
+  start(false);
 }
 function hookPath() {
   if (process.env.PACELINE_HOOK_PATH) return process.env.PACELINE_HOOK_PATH;
