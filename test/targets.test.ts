@@ -117,8 +117,9 @@ describe("resolveTargets", () => {
     });
   });
   it("Bash → hosts in command, none for ls", () => {
-    expect(resolveTargets({ tool_name: "Bash", tool_input: { command: "ls" } }, {}, ro)).toEqual({ hosts: [], readOnly: false });
+    expect(resolveTargets({ tool_name: "Bash", tool_input: { command: "ls" } }, {}, ro)).toEqual({ hosts: [], readOnly: false, followsRedirects: false });
     expect(resolveTargets({ tool_name: "Bash", tool_input: { command: "gh pr list" } }, {}, ro).hosts).toEqual(["api.github.com"]);
+    expect(resolveTargets({ tool_name: "Bash", tool_input: { command: "curl -L https://x.test" } }, {}, ro).followsRedirects).toBe(true);
   });
   it("navigate → url host (and ignores the tab)", () => {
     const r = resolveTargets({ tool_name: "mcp__claude-in-chrome__navigate", tool_input: { url: "https://x.example.com", tabId: 7 } }, {}, ro);
