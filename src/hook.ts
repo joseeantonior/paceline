@@ -1,5 +1,5 @@
 import path from "node:path";
-import { ConfigError, DEFAULT_CONFIG, loadConfig, refuseFor, type Config } from "./config.js";
+import { ConfigError, DEFAULT_CONFIG, loadConfig, refuseFor, rulesForHost, type Config } from "./config.js";
 import { logLine } from "./log.js";
 import { allRuleBuckets, bucketsFor, pace, release, type Bucket } from "./pacer.js";
 import { projectConfigPath, projectDir, stateDir, userConfigPath } from "./paths.js";
@@ -108,6 +108,20 @@ async function handlePre(input: HookInput, state: string): Promise<void> {
     );
   } else {
     buckets = bucketsFor(config, resolved.hosts);
+    // `curl -L https://short.example/x` can 302 to a paced host the text never names. Treat a
+    // redirect-following command aimed at an unpaced host like an unknown tab: pace it against
+    // every rule unless the user opted out.
+    if (resolved.followsRedirects && config.redirectPolicy === "pace-all" && config.rules.length > 0) {
+      const unpaced = resolved.hosts.filter((h) => !isLoopback(h) && rulesForHost(config, h).length === 0);
+      if (unpaced.length > 0) {
+        const byKey = new Map(buckets.map((b) => [b.key, b] as const));
+        for (const b of allRuleBuckets(config, store)) if (!byKey.has(b.key)) byKey.set(b.key, b);
+        buckets = [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+        notes.push(
+          `paceline: this command follows redirects and ${unpaced.join(", ")} matches no rule, so its final destination is unknown. It was paced against all ${config.rules.length} rule(s) (redirectPolicy: pace-all). Drop -L/--location, request the final host directly, or set "redirectPolicy": "ignore".`,
+        );
+      }
+    }
   }
   if (buckets.length === 0) return;
 

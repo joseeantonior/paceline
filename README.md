@@ -131,6 +131,7 @@ not control, give your personal rules names a repository is unlikely to reuse, o
 | `refuse[]` | `[]` | `{ "tool": "<name or glob>", "reason": "…" }`: deny a tool outright. Claude sees the reason. |
 | `defaultMinIntervalMs` | `0` | Gap for hosts that match no rule. `0` means pass through. |
 | `unknownTargetPolicy` | `"pace-all"` | A browser action on a tab whose site is not yet known: `pace-all` counts it against every rule (a `perHost` rule is counted as a whole, since the host is unknown); `ignore` lets it through. |
+| `redirectPolicy` | `"pace-all"` | A redirect-following shell command (`curl -L`, `wget`, `http --follow`) aimed at a host no rule covers could land on a paced host. `pace-all` counts it against every rule and says so; `ignore` lets it through. Only applies when at least one rule exists. |
 | `inFlightHoldMs` | `120000` | How long a claimed call blocks others if its `PostToolUse` never arrives. |
 | `maxWaitMs` | `240000` | Longest a hook will wait before refusing the call with a retry hint. Capped at 290 000 because the hook itself times out (and blocks) at 300 s. |
 | `notifyAfterMs` | `1000` | Waits at least this long produce a visible `paceline: waited …` message. |
@@ -159,7 +160,15 @@ paceline does not configure tools; it reads **where the call is going** from the
 | Any other MCP tool (`mcp__*`) | Any `url`, `uri`, `endpoint`, `base_url`, `href`, `host` field in the input, two levels deep. |
 
 Hosts that match no rule are untouched (unless `defaultMinIntervalMs` is set). `WebSearch` is
-never paced: it is not a site you hold an account on. `gh` resolves to `api.github.com` and a
+never paced: it is not a site you hold an account on.
+
+**Redirects.** The hook sees the URL in the command, not where the server sends it. `curl -L
+https://short.example/x` names an unpaced host and may 302 to a paced one; the request would
+then run outside the lock. `WebFetch` is safe, because Claude Code hands a cross-host redirect
+back to the model instead of following it, and the second fetch is its own, paced, tool call.
+For `curl -L`, `wget` (follows by default) and `http --follow`, `redirectPolicy` applies: when the
+named host matches no rule, the call is paced against every rule and the message says why.
+`test/redirect.e2e.test.ts` is the two-host fixture that shows the leak and the rule. `gh` resolves to `api.github.com` and a
 `git@github.com:` remote to `github.com`; a rule that should cover both lists both, as the example
 config does.
 
@@ -256,7 +265,9 @@ call, which closes the one hole the Rulestack post listed.
   `paceline log`, so a format mismatch takes one look to diagnose. A `navigate` to `back` or
   `forward` makes the tab unknown again.
 - **A page's own requests are not paced.** paceline spaces the agent's actions, not the dozen
-  XHRs a page fires when it loads.
+  XHRs a page fires when it loads. A browser navigation that redirects to another site is in
+  the same category: the tab is attributed to the requested host until the next `navigate` or
+  tab listing.
 - **Bash matching is best-effort.** `curl $URL` with the URL in a variable is invisible, and `gh`
   is recognised as a command word in the common positions (`&&`, `;`, `|`, `then`, `sudo`, …) but
   not in every shell construct. Prefer literal URLs in agent-issued commands, or route scripts

@@ -147,6 +147,34 @@ export interface ResolvedTargets {
   unknownTab?: string;
   /** The call makes no request to any site (read-only). */
   readOnly: boolean;
+  /** A shell command that follows HTTP redirects, so its real destination may not appear in the text. */
+  followsRedirects?: boolean;
+}
+
+const SEGMENT_SPLIT_RE = /(?:&&|\|\||[;|]|\$\(|`)/;
+
+/**
+ * Does this shell command follow HTTP redirects? `curl -L`, `wget` (default on),
+ * `http`/`xh --follow`. A redirect can send the real request to a host the
+ * command text never names, which the pre hook otherwise cannot see.
+ */
+export function followsRedirects(command: unknown): boolean {
+  if (typeof command !== "string" || !command) return false;
+  for (const seg of command.split(SEGMENT_SPLIT_RE)) {
+    const tokens = seg.trim().split(/\s+/);
+    const cmdIdx = tokens.findIndex((t) => !/^[A-Z_][A-Z0-9_]*=/.test(t));
+    const cmd = tokens[cmdIdx]?.replace(/^.*\//, "");
+    if (!cmd) continue;
+    const rest = tokens.slice(cmdIdx + 1);
+    if (cmd === "curl" || cmd === "curlie") {
+      if (rest.some((t) => /^-[a-zA-Z]*L[a-zA-Z]*$/.test(t) || t === "--location" || t === "--location-trusted")) return true;
+    } else if (cmd === "wget") {
+      if (!rest.some((t, i) => t === "--max-redirect=0" || (t === "--max-redirect" && rest[i + 1] === "0"))) return true;
+    } else if (/^(http|https|xh|httpie)$/.test(cmd)) {
+      if (rest.some((t) => t === "--follow" || /^-[a-zA-Z]*F[a-zA-Z]*$/.test(t))) return true;
+    }
+  }
+  return false;
 }
 
 export function isReadOnlyTool(toolName: string, toolInput: unknown, readOnlyTools: readonly string[]): boolean {
@@ -173,7 +201,7 @@ export function resolveTargets(input: HookInput, tabs: TabsMap, readOnlyTools: r
   if (toolName === "Bash" || toolName === "bash") {
     const cmd = toolInput && typeof toolInput === "object" ? (toolInput as Record<string, unknown>).command : undefined;
     for (const h of hostsFromCommand(cmd)) hosts.add(h);
-    return { hosts: [...hosts], readOnly: false };
+    return { hosts: [...hosts], readOnly: false, followsRedirects: followsRedirects(cmd) };
   }
 
   for (const h of hostsFromObject(toolInput)) hosts.add(h);

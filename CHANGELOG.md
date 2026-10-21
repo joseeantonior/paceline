@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `redirectPolicy` (default `pace-all`): a redirect-following shell command (`curl -L`, `wget`,
+  `http --follow`) aimed at a host no rule covers is paced against every rule, because its real
+  destination may be a paced host. Two-host fixture in `test/redirect.e2e.test.ts`.
+
 ## 0.1.1 — 2026-10-20
 
 - Release tooling: `npm run bump -- <version>` sets the version in `package.json`,

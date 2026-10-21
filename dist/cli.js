@@ -51,6 +51,7 @@ var MAX_WAIT_CEILING_MS = 29e4;
 var DEFAULT_CONFIG = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
+  redirectPolicy: "pace-all",
   inFlightHoldMs: 12e4,
   staleLockMs: 15 * 6e4,
   maxWaitMs: 24e4,
@@ -129,6 +130,7 @@ function validatePartial(raw, file) {
     "$schema",
     "defaultMinIntervalMs",
     "unknownTargetPolicy",
+    "redirectPolicy",
     "inFlightHoldMs",
     "staleLockMs",
     "maxWaitMs",
@@ -150,6 +152,12 @@ function validatePartial(raw, file) {
       throw new ConfigError(file, `unknownTargetPolicy must be "pace-all" or "ignore"`);
     }
     out.unknownTargetPolicy = raw.unknownTargetPolicy;
+  }
+  if (raw.redirectPolicy !== void 0) {
+    if (raw.redirectPolicy !== "pace-all" && raw.redirectPolicy !== "ignore") {
+      throw new ConfigError(file, `redirectPolicy must be "pace-all" or "ignore"`);
+    }
+    out.redirectPolicy = raw.redirectPolicy;
   }
   for (const k of ["inFlightHoldMs", "staleLockMs", "maxWaitMs", "notifyAfterMs"]) {
     if (raw[k] !== void 0) out[k] = nonNegInt(raw[k], k, file);
@@ -189,6 +197,7 @@ function mergeConfigs(layers) {
       if (layer[k] !== void 0) cfg[k] = layer[k];
     }
     if (layer.unknownTargetPolicy !== void 0) cfg.unknownTargetPolicy = layer.unknownTargetPolicy;
+    if (layer.redirectPolicy !== void 0) cfg.redirectPolicy = layer.redirectPolicy;
     if (layer.refuseUnpaceable !== void 0) cfg.refuseUnpaceable = layer.refuseUnpaceable;
     if (layer.reclaimOnOwnerExit !== void 0) cfg.reclaimOnOwnerExit = layer.reclaimOnOwnerExit;
     for (const t of layer.readOnlyTools ?? []) readOnly.add(t);

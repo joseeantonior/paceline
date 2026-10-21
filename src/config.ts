@@ -22,6 +22,8 @@ export interface RefuseRule {
 export interface Config {
   defaultMinIntervalMs: number;
   unknownTargetPolicy: "pace-all" | "ignore";
+  /** A redirect-following command (`curl -L`, `wget`) aimed at an unpaced host could land on a paced one. */
+  redirectPolicy: "pace-all" | "ignore";
   inFlightHoldMs: number;
   staleLockMs: number;
   maxWaitMs: number;
@@ -58,6 +60,7 @@ export const MAX_WAIT_CEILING_MS = 290_000;
 export const DEFAULT_CONFIG: Config = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
+  redirectPolicy: "pace-all",
   inFlightHoldMs: 120_000,
   staleLockMs: 15 * 60_000,
   maxWaitMs: 240_000,
@@ -144,6 +147,7 @@ export function validatePartial(raw: unknown, file: string): Partial_ {
     "$schema",
     "defaultMinIntervalMs",
     "unknownTargetPolicy",
+    "redirectPolicy",
     "inFlightHoldMs",
     "staleLockMs",
     "maxWaitMs",
@@ -165,6 +169,12 @@ export function validatePartial(raw: unknown, file: string): Partial_ {
       throw new ConfigError(file, `unknownTargetPolicy must be "pace-all" or "ignore"`);
     }
     out.unknownTargetPolicy = raw.unknownTargetPolicy;
+  }
+  if (raw.redirectPolicy !== undefined) {
+    if (raw.redirectPolicy !== "pace-all" && raw.redirectPolicy !== "ignore") {
+      throw new ConfigError(file, `redirectPolicy must be "pace-all" or "ignore"`);
+    }
+    out.redirectPolicy = raw.redirectPolicy;
   }
   for (const k of ["inFlightHoldMs", "staleLockMs", "maxWaitMs", "notifyAfterMs"] as const) {
     if (raw[k] !== undefined) out[k] = nonNegInt(raw[k], k, file);
@@ -209,6 +219,7 @@ export function mergeConfigs(layers: Partial_[]): Config {
       if (layer[k] !== undefined) cfg[k] = layer[k];
     }
     if (layer.unknownTargetPolicy !== undefined) cfg.unknownTargetPolicy = layer.unknownTargetPolicy;
+    if (layer.redirectPolicy !== undefined) cfg.redirectPolicy = layer.redirectPolicy;
     if (layer.refuseUnpaceable !== undefined) cfg.refuseUnpaceable = layer.refuseUnpaceable;
     if (layer.reclaimOnOwnerExit !== undefined) cfg.reclaimOnOwnerExit = layer.reclaimOnOwnerExit;
     for (const t of layer.readOnlyTools ?? []) readOnly.add(t);

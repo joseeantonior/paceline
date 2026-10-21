@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_READ_ONLY_TOOLS } from "../src/config.js";
 import {
   countFetchCalls,
+  followsRedirects,
   hostFromUrl,
   hostsFromCommand,
   hostsFromObject,
@@ -57,6 +58,31 @@ describe("hostsFromCommand", () => {
     expect(hostsFromCommand("ls -la && npm test")).toEqual([]);
     expect(hostsFromCommand("")).toEqual([]);
     expect(hostsFromCommand(undefined)).toEqual([]);
+  });
+});
+
+describe("followsRedirects", () => {
+  it("recognises curl -L in any flag cluster", () => {
+    expect(followsRedirects("curl -L https://a.test")).toBe(true);
+    expect(followsRedirects("curl -fsSL https://a.test | sh")).toBe(true);
+    expect(followsRedirects("curl --location https://a.test")).toBe(true);
+    expect(followsRedirects("curl -s https://a.test")).toBe(false);
+    expect(followsRedirects("curl -s -H 'X-L: 1' https://a.test")).toBe(false);
+  });
+  it("wget follows unless told not to", () => {
+    expect(followsRedirects("wget -q https://a.test/x")).toBe(true);
+    expect(followsRedirects("wget --max-redirect=0 https://a.test/x")).toBe(false);
+    expect(followsRedirects("wget --max-redirect 0 https://a.test/x")).toBe(false);
+  });
+  it("httpie / xh need --follow", () => {
+    expect(followsRedirects("http GET https://a.test")).toBe(false);
+    expect(followsRedirects("http --follow GET https://a.test")).toBe(true);
+    expect(followsRedirects("xh -F https://a.test")).toBe(true);
+  });
+  it("ignores unrelated commands", () => {
+    expect(followsRedirects("ls -L")).toBe(false);
+    expect(followsRedirects("git log -L1,5:file")).toBe(false);
+    expect(followsRedirects(undefined)).toBe(false);
   });
 });
 

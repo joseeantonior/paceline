@@ -48,6 +48,7 @@ var MAX_WAIT_CEILING_MS = 29e4;
 var DEFAULT_CONFIG = {
   defaultMinIntervalMs: 0,
   unknownTargetPolicy: "pace-all",
+  redirectPolicy: "pace-all",
   inFlightHoldMs: 12e4,
   staleLockMs: 15 * 6e4,
   maxWaitMs: 24e4,
@@ -126,6 +127,7 @@ function validatePartial(raw, file) {
     "$schema",
     "defaultMinIntervalMs",
     "unknownTargetPolicy",
+    "redirectPolicy",
     "inFlightHoldMs",
     "staleLockMs",
     "maxWaitMs",
@@ -147,6 +149,12 @@ function validatePartial(raw, file) {
       throw new ConfigError(file, `unknownTargetPolicy must be "pace-all" or "ignore"`);
     }
     out.unknownTargetPolicy = raw.unknownTargetPolicy;
+  }
+  if (raw.redirectPolicy !== void 0) {
+    if (raw.redirectPolicy !== "pace-all" && raw.redirectPolicy !== "ignore") {
+      throw new ConfigError(file, `redirectPolicy must be "pace-all" or "ignore"`);
+    }
+    out.redirectPolicy = raw.redirectPolicy;
   }
   for (const k of ["inFlightHoldMs", "staleLockMs", "maxWaitMs", "notifyAfterMs"]) {
     if (raw[k] !== void 0) out[k] = nonNegInt(raw[k], k, file);
@@ -186,6 +194,7 @@ function mergeConfigs(layers) {
       if (layer[k] !== void 0) cfg[k] = layer[k];
     }
     if (layer.unknownTargetPolicy !== void 0) cfg.unknownTargetPolicy = layer.unknownTargetPolicy;
+    if (layer.redirectPolicy !== void 0) cfg.redirectPolicy = layer.redirectPolicy;
     if (layer.refuseUnpaceable !== void 0) cfg.refuseUnpaceable = layer.refuseUnpaceable;
     if (layer.reclaimOnOwnerExit !== void 0) cfg.reclaimOnOwnerExit = layer.reclaimOnOwnerExit;
     for (const t of layer.readOnlyTools ?? []) readOnly.add(t);
@@ -697,6 +706,25 @@ function tabIdOf(toolInput) {
   if (typeof t === "string" && t.trim()) return t.trim();
   return void 0;
 }
+var SEGMENT_SPLIT_RE = /(?:&&|\|\||[;|]|\$\(|`)/;
+function followsRedirects(command) {
+  if (typeof command !== "string" || !command) return false;
+  for (const seg of command.split(SEGMENT_SPLIT_RE)) {
+    const tokens = seg.trim().split(/\s+/);
+    const cmdIdx = tokens.findIndex((t) => !/^[A-Z_][A-Z0-9_]*=/.test(t));
+    const cmd = tokens[cmdIdx]?.replace(/^.*\//, "");
+    if (!cmd) continue;
+    const rest = tokens.slice(cmdIdx + 1);
+    if (cmd === "curl" || cmd === "curlie") {
+      if (rest.some((t) => /^-[a-zA-Z]*L[a-zA-Z]*$/.test(t) || t === "--location" || t === "--location-trusted")) return true;
+    } else if (cmd === "wget") {
+      if (!rest.some((t, i) => t === "--max-redirect=0" || t === "--max-redirect" && rest[i + 1] === "0")) return true;
+    } else if (/^(http|https|xh|httpie)$/.test(cmd)) {
+      if (rest.some((t) => t === "--follow" || /^-[a-zA-Z]*F[a-zA-Z]*$/.test(t))) return true;
+    }
+  }
+  return false;
+}
 function isReadOnlyTool(toolName, toolInput, readOnlyTools) {
   if (readOnlyTools.includes(toolName)) return true;
   if (toolName === `${CHROME_PREFIX}computer` && toolInput && typeof toolInput === "object") {
@@ -713,7 +741,7 @@ function resolveTargets(input, tabs, readOnlyTools) {
   if (toolName === "Bash" || toolName === "bash") {
     const cmd = toolInput && typeof toolInput === "object" ? toolInput.command : void 0;
     for (const h of hostsFromCommand(cmd)) hosts.add(h);
-    return { hosts: [...hosts], readOnly: false };
+    return { hosts: [...hosts], readOnly: false, followsRedirects: followsRedirects(cmd) };
   }
   for (const h of hostsFromObject(toolInput)) hosts.add(h);
   if (toolName.startsWith(CHROME_PREFIX)) {
@@ -1046,6 +1074,17 @@ async function handlePre(input, state) {
     );
   } else {
     buckets = bucketsFor(config, resolved.hosts);
+    if (resolved.followsRedirects && config.redirectPolicy === "pace-all" && config.rules.length > 0) {
+      const unpaced = resolved.hosts.filter((h) => !isLoopback(h) && rulesForHost(config, h).length === 0);
+      if (unpaced.length > 0) {
+        const byKey = new Map(buckets.map((b) => [b.key, b]));
+        for (const b of allRuleBuckets(config, store)) if (!byKey.has(b.key)) byKey.set(b.key, b);
+        buckets = [...byKey.values()].sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+        notes.push(
+          `paceline: this command follows redirects and ${unpaced.join(", ")} matches no rule, so its final destination is unknown. It was paced against all ${config.rules.length} rule(s) (redirectPolicy: pace-all). Drop -L/--location, request the final host directly, or set "redirectPolicy": "ignore".`
+        );
+      }
+    }
   }
   if (buckets.length === 0) return;
   if (config.refuseUnpaceable) {
