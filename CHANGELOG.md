@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-10-21
 
 - `redirectPolicy` (default `pace-all`): a redirect-following shell command (`curl -L`, `wget`,
   `http --follow`) aimed at a host no rule covers is paced against every rule, because its real
-  destination may be a paced host. Two-host fixture in `test/redirect.e2e.test.ts`.
+  destination may be a paced host. `WebFetch` needs nothing: Claude Code returns cross-host
+  redirects to the model instead of following them. Two-host fixture in
+  `test/redirect.e2e.test.ts` reproduces the leak with real servers and curl.
 
 ## 0.1.1 — 2026-10-20
 

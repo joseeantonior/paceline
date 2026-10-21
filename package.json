@@ -1,6 +1,6 @@
 {
   "name": "paceline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Your agents take turns. A Claude Code plugin that enforces a minimum gap between calls to the same external host, machine-wide, across every session, subagent and script.",
   "license": "MIT",
   "author": "Jose Antonio Rodriguez",

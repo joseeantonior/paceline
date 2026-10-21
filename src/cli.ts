@@ -7,7 +7,7 @@ import { bucketsFor, pace, release, type Bucket } from "./pacer.js";
 import { projectConfigPath, stateDir, userConfigPath } from "./paths.js";
 import { computeWaitMs, hostKey, pidAlive, ruleKey, Store, type LastRecord } from "./state.js";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 const HELP = `paceline ${VERSION} — your agents take turns.
 

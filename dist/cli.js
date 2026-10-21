@@ -739,7 +739,7 @@ function projectConfigPath(projectDir) {
 }
 
 // src/cli.ts
-var VERSION = "0.1.1";
+var VERSION = "0.1.2";
 var HELP = `paceline ${VERSION} \u2014 your agents take turns.
 
 Usage:
